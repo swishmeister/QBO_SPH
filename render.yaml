@@ -4,16 +4,22 @@ services:
     runtime: python
     plan: starter
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    startCommand: python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
       - key: QBO_ENV
-        value: sandbox
+        value: production
       - key: QBO_REDIRECT_URI
         value: https://sph.delightfulgardens.com/qbo/callback
       - key: REQUIRE_BASIC_AUTH
         value: true
       - key: QBO_READ_ONLY
+        value: true
+      - key: SECURE_COOKIES
+        value: true
+      - key: ENABLE_HSTS
         value: true
       - key: APP_SECRET_KEY
         generateValue: true

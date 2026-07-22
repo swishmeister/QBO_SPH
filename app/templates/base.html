@@ -13,6 +13,8 @@
         <span class="subtle">Internal estimating tool</span>
     </div>
     <div class="qbo-status">
+        <span class="badge">{{ qbo.env|capitalize }}</span>
+        {% if qbo.read_only %}<span class="badge warn">Read-only</span>{% endif %}
         {% if qbo.connected %}
             <span class="badge good">QBO Connected</span>
             <span class="subtle">Realm {{ qbo.realm_id }}</span>

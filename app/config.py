@@ -6,6 +6,10 @@ import os
 load_dotenv()
 
 
+def _env_bool(name: str, default: str = "false") -> bool:
+    return os.getenv(name, default).lower() in {"1", "true", "yes", "on"}
+
+
 class Settings(BaseModel):
     qbo_client_id: str = os.getenv("QBO_CLIENT_ID", "")
     qbo_client_secret: str = os.getenv("QBO_CLIENT_SECRET", "")
@@ -19,14 +23,20 @@ class Settings(BaseModel):
     qbo_cf_profit_per_hour_id: str = os.getenv("QBO_CF_PROFIT_PER_HOUR_ID", "3")
     app_username: str = os.getenv("APP_USERNAME", "")
     app_password: str = os.getenv("APP_PASSWORD", "")
-    require_basic_auth: bool = os.getenv("REQUIRE_BASIC_AUTH", "false").lower() in {"1", "true", "yes", "on"}
-    qbo_read_only: bool = os.getenv("QBO_READ_ONLY", "false").lower() in {"1", "true", "yes", "on"}
+    require_basic_auth: bool = _env_bool("REQUIRE_BASIC_AUTH", "false")
+    qbo_read_only: bool = _env_bool("QBO_READ_ONLY", "true")
+    secure_cookies: bool = _env_bool("SECURE_COOKIES", "false")
+    enable_hsts: bool = _env_bool("ENABLE_HSTS", "false")
 
     @property
     def qbo_api_base_url(self) -> str:
         if self.qbo_env.lower() == "production":
             return "https://quickbooks.api.intuit.com"
         return "https://sandbox-quickbooks.api.intuit.com"
+
+    @property
+    def normalized_qbo_env(self) -> str:
+        return "production" if self.qbo_env.lower() == "production" else "sandbox"
 
 
 @lru_cache

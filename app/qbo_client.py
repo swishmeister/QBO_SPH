@@ -4,9 +4,12 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 from urllib.parse import urlencode
+import base64
+import hashlib
 import secrets
 
 import httpx
+from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy.orm import Session
 
 from .config import get_settings
@@ -23,6 +26,34 @@ SCOPE = "com.intuit.quickbooks.accounting"
 
 class QboError(RuntimeError):
     pass
+
+
+def _token_cipher() -> Fernet:
+    """Derive a stable encryption key from APP_SECRET_KEY for token-at-rest protection."""
+    digest = hashlib.sha256(settings.app_secret_key.encode("utf-8")).digest()
+    key = base64.urlsafe_b64encode(digest)
+    return Fernet(key)
+
+
+def _encrypt_token(token: str) -> str:
+    if not token:
+        return ""
+    if token.startswith("enc:"):
+        return token
+    encrypted = _token_cipher().encrypt(token.encode("utf-8")).decode("utf-8")
+    return f"enc:{encrypted}"
+
+
+def _decrypt_token(token: str) -> str:
+    if not token:
+        return ""
+    if not token.startswith("enc:"):
+        # Backward compatible with older rows that stored plaintext tokens.
+        return token
+    try:
+        return _token_cipher().decrypt(token[4:].encode("utf-8")).decode("utf-8")
+    except InvalidToken as exc:
+        raise QboError("Stored QuickBooks token could not be decrypted. Reconnect QuickBooks from the app.") from exc
 
 
 def build_authorization_url(state: str | None = None) -> tuple[str, str]:
@@ -64,8 +95,8 @@ async def exchange_code_for_tokens(code: str, realm_id: str, db: Session) -> Qbo
         db.add(connection)
 
     connection.realm_id = realm_id
-    connection.access_token = payload["access_token"]
-    connection.refresh_token = payload["refresh_token"]
+    connection.access_token = _encrypt_token(payload["access_token"])
+    connection.refresh_token = _encrypt_token(payload["refresh_token"])
     connection.access_token_expires_at = _expires_at(payload.get("expires_in"), 3600)
     connection.refresh_token_expires_at = _expires_at(payload.get("x_refresh_token_expires_in"), 8726400)
     db.commit()
@@ -88,7 +119,7 @@ async def refresh_tokens_if_needed(db: Session, connection: QboConnection) -> Qb
             auth=(settings.qbo_client_id, settings.qbo_client_secret),
             data={
                 "grant_type": "refresh_token",
-                "refresh_token": connection.refresh_token,
+                "refresh_token": _decrypt_token(connection.refresh_token),
             },
             headers={"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"},
         )
@@ -97,8 +128,9 @@ async def refresh_tokens_if_needed(db: Session, connection: QboConnection) -> Qb
         raise QboError(f"Token refresh failed: {response.status_code} {response.text}")
 
     payload = response.json()
-    connection.access_token = payload["access_token"]
-    connection.refresh_token = payload.get("refresh_token", connection.refresh_token)
+    connection.access_token = _encrypt_token(payload["access_token"])
+    if payload.get("refresh_token"):
+        connection.refresh_token = _encrypt_token(payload["refresh_token"])
     connection.access_token_expires_at = _expires_at(payload.get("expires_in"), 3600)
     if payload.get("x_refresh_token_expires_in"):
         connection.refresh_token_expires_at = _expires_at(payload.get("x_refresh_token_expires_in"), 8726400)
@@ -114,7 +146,7 @@ async def revoke_qbo_tokens(db: Session) -> None:
     if connection is None:
         return
 
-    token_to_revoke = connection.refresh_token or connection.access_token
+    token_to_revoke = _decrypt_token(connection.refresh_token or connection.access_token)
     if not token_to_revoke:
         return
 
@@ -151,7 +183,7 @@ async def qbo_request(db: Session, method: str, path: str, *, params: dict[str, 
             params=request_params,
             json=json_body,
             headers={
-                "Authorization": f"Bearer {connection.access_token}",
+                "Authorization": f"Bearer {_decrypt_token(connection.access_token)}",
                 "Accept": "application/json",
                 "Content-Type": "application/json",
             },

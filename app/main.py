@@ -31,11 +31,27 @@ settings = get_settings()
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="QBO Quote Margin App")
-app.add_middleware(SessionMiddleware, secret_key=settings.app_secret_key)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=settings.app_secret_key,
+    https_only=settings.secure_cookies,
+    same_site="lax",
+)
 BASE_DIR = Path(__file__).resolve().parent
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    response.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+    if settings.enable_hsts and request.url.scheme == "https":
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
 
 def _unauthorized_response() -> Response:
     return Response(
@@ -96,6 +112,7 @@ def get_qbo_status(db: Session) -> dict[str, str | bool | None]:
         "connected": connection is not None,
         "realm_id": connection.realm_id if connection else None,
         "read_only": settings.qbo_read_only,
+        "env": settings.normalized_qbo_env,
     }
 
 
