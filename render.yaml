@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: qbo-quote-margin-app
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: QBO_ENV
+        value: sandbox
+      - key: QBO_REDIRECT_URI
+        value: https://sph.delightfulgardens.com/qbo/callback
+      - key: REQUIRE_BASIC_AUTH
+        value: true
+      - key: QBO_READ_ONLY
+        value: true
+      - key: APP_SECRET_KEY
+        generateValue: true
+      - key: APP_USERNAME
+        sync: false
+      - key: APP_PASSWORD
+        sync: false
+      - key: QBO_CLIENT_ID
+        sync: false
+      - key: QBO_CLIENT_SECRET
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: qbo-quote-margin-db
+          property: connectionString
+
+databases:
+  - name: qbo-quote-margin-db
+    plan: basic-256mb

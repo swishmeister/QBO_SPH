@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>QBO Quote Margin App</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<header class="topbar">
+    <div>
+        <a class="brand" href="/">QBO Quote Margin</a>
+        <span class="subtle">Internal estimating tool</span>
+    </div>
+    <div class="qbo-status">
+        {% if qbo.connected %}
+            <span class="badge good">QBO Connected</span>
+            <span class="subtle">Realm {{ qbo.realm_id }}</span>
+        {% else %}
+            <span class="badge warn">QBO Not Connected</span>
+        {% endif %}
+    </div>
+</header>
+<main class="container">
+    {% block content %}{% endblock %}
+</main>
+</body>
+</html>
