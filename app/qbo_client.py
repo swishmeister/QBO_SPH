@@ -193,6 +193,18 @@ async def fetch_company_info(db: Session) -> dict[str, Any]:
     return payload.get("CompanyInfo", payload)
 
 
+
+
+async def fetch_estimate_by_id(db: Session, estimate_id: str) -> dict[str, Any]:
+    cleaned = str(estimate_id or "").strip()
+    if not cleaned:
+        raise QboError("Missing QBO Estimate ID.")
+    payload = await qbo_request(db, "GET", f"/estimate/{cleaned}")
+    estimate = payload.get("Estimate")
+    if not estimate:
+        raise QboError(f"No QBO Estimate found for ID '{cleaned}'.")
+    return estimate
+
 async def fetch_estimate_by_doc_number_or_id(db: Session, identifier: str) -> dict[str, Any]:
     cleaned = identifier.strip()
     if not cleaned:

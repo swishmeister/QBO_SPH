@@ -27,6 +27,7 @@ from .qbo_client import (
     fetch_all_items,
     fetch_company_info,
     fetch_estimate_by_doc_number_or_id,
+    fetch_estimate_by_id,
     fetch_estimates_from_date,
     qbo_query,
     revoke_qbo_tokens,
@@ -144,9 +145,21 @@ def health_check():
 
 
 def parse_decimal(value: str | None, default: str = "0.00") -> Decimal:
+    """Parse form/API numeric values safely.
+
+    Browsers sometimes submit blank strings, and users may paste values like
+    "$1,250.00" or "35%". Keeping this tolerant prevents local saves from
+    turning into 500 errors.
+    """
     try:
-        return Decimal(str(value if value not in (None, "") else default)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    except InvalidOperation as exc:
+        if value in (None, ""):
+            cleaned = default
+        else:
+            cleaned = str(value).strip().replace("$", "").replace(",", "").replace("%", "")
+            if cleaned == "":
+                cleaned = default
+        return Decimal(cleaned).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except (InvalidOperation, ValueError) as exc:
         raise HTTPException(status_code=400, detail=f"Invalid numeric value: {value}") from exc
 
 
@@ -534,11 +547,12 @@ async def _refresh_quote_from_qbo(quote_id: int, db: Session) -> RedirectRespons
     if quote is None or not quote.qbo_estimate_id:
         raise HTTPException(status_code=404, detail="Linked QBO Estimate not found for this quote.")
     try:
-        # Prefer the QBO internal Id. Fall back to the user-facing DocNumber if needed.
-        identifier = quote.qbo_estimate_id or quote.qbo_estimate_doc_number or str(quote.id)
-        estimate = await fetch_estimate_by_doc_number_or_id(db, identifier)
+        # For already-linked estimates, direct GET by Id is safer than a QBO query.
+        # This avoids DocNumber/Id query syntax issues and pulls the latest SyncToken.
+        estimate = await fetch_estimate_by_id(db, quote.qbo_estimate_id)
         quote = upsert_quote_from_qbo_estimate(db, estimate)
         db.commit()
+        db.refresh(quote)
     except QboError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return RedirectResponse(f"/quotes/{quote.id}?refreshed=1", status_code=303)
@@ -590,45 +604,86 @@ async def save_quote_sheet(quote_id: int, request: Request, db: Annotated[Sessio
     quote = db.get(Quote, quote_id)
     if quote is None:
         raise HTTPException(status_code=404, detail="Quote not found")
+
     form = await request.form()
-    quote.quoted_labor_hours = parse_decimal(form.get("quoted_labor_hours"), "0.00")
-    quote.hourly_labor_rate = parse_decimal(form.get("hourly_labor_rate"), "0.00")
-    for line in quote.lines:
-        prefix = f"line_{line.id}_"
-        line.product_service_name = str(form.get(prefix + "product_service") or "").strip()
-        matched = find_item_by_name(db, line.product_service_name)
-        if matched:
-            line.qbo_item_id = matched.qbo_id
-            line.qbo_item_name = matched.fully_qualified_name or matched.name
-            line.is_variable_cost = matched.variable_cost
-        labor_item = is_labor_item_name(line.product_service_name or line.qbo_item_name)
-        line.description = str(form.get(prefix + "description") or "").strip()
-        line.quantity = parse_decimal(form.get(prefix + "quantity"), "0.00")
-        line.unit_cost = parse_decimal(form.get(prefix + "unit_cost"), "0.00")
-        submitted_rate = parse_decimal(form.get(prefix + "unit_price"), "0.00")
-        submitted_markup_raw = form.get(prefix + "markup_percent")
-        if labor_item:
-            line.unit_price = submitted_rate
-            line.unit_cost = line.unit_price
-            line.labor_hours = line.quantity
-        else:
-            # The browser normally recalculates Rate when Markup % changes.
-            # This server-side fallback makes Save Locally reliable even if a browser misses the JS update.
-            if submitted_markup_raw not in (None, ""):
-                submitted_markup = parse_decimal(submitted_markup_raw, "0.00")
-                line.unit_price = (line.unit_cost * (Decimal("1.00") + (submitted_markup / Decimal("100.00")))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+    try:
+        quote.quoted_labor_hours = parse_decimal(form.get("quoted_labor_hours"), "0.00")
+        quote.hourly_labor_rate = parse_decimal(form.get("hourly_labor_rate"), "0.00")
+
+        for line in sorted(list(quote.lines), key=lambda x: x.sort_order or 0):
+            prefix = f"line_{line.id}_"
+
+            # If a line was not present in the submitted form, leave it unchanged.
+            # This protects mobile/desktop layout differences and future hidden rows.
+            if prefix + "description" not in form and prefix + "product_service" not in form:
+                continue
+
+            product_service = str(form.get(prefix + "product_service") or "").strip()
+            description = str(form.get(prefix + "description") or "").strip()
+            quantity = parse_decimal(form.get(prefix + "quantity"), "0.00")
+            unit_cost = parse_decimal(form.get(prefix + "unit_cost"), "0.00")
+            submitted_rate = parse_decimal(form.get(prefix + "unit_price"), "0.00")
+            submitted_markup_raw = form.get(prefix + "markup_percent")
+
+            line.product_service_name = product_service
+            line.description = description
+            line.quantity = quantity
+            line.unit_cost = unit_cost
+
+            matched = find_item_by_name(db, product_service)
+            if matched:
+                line.qbo_item_id = matched.qbo_id
+                line.qbo_item_name = matched.fully_qualified_name or matched.name
+                line.is_variable_cost = matched.variable_cost
             else:
+                line.is_variable_cost = is_variable_cost_item_name(product_service or line.qbo_item_name)
+
+            labor_item = is_labor_item_name(product_service or line.qbo_item_name)
+            empty_numeric = quantity == 0 and unit_cost == 0 and submitted_rate == 0 and submitted_markup_raw in (None, "")
+            line.is_section_header = product_service == "" and empty_numeric
+
+            if line.is_section_header:
+                line.line_type = "Header"
+                line.qbo_item_id = None
+                line.qbo_item_name = None
+                line.quantity = Decimal("0.00")
+                line.unit_cost = Decimal("0.00")
+                line.unit_price = Decimal("0.00")
+                line.labor_hours = Decimal("0.00")
+                continue
+
+            if labor_item:
+                # LC:* lines are quoted labor. They should supply hours/rate for SPH
+                # but should not create gross material markup.
                 line.unit_price = submitted_rate
-            line.labor_hours = Decimal("0.00")
-        line.is_section_header = line.product_service_name == "" and line.quantity == 0 and line.unit_cost == 0 and line.unit_price == 0
-        line.line_type = "Header" if line.is_section_header else ("Labor" if labor_item else ("Variable Cost" if line.is_variable_cost else "Imported"))
-    labor_lines = [line for line in quote.lines if line.line_type == "Labor" and not line.is_section_header]
-    total_labor_hours = sum((Decimal(line.quantity or Decimal("0.00")) for line in labor_lines), Decimal("0.00"))
-    total_labor_revenue = sum((Decimal(line.quantity or Decimal("0.00")) * Decimal(line.unit_price or Decimal("0.00")) for line in labor_lines), Decimal("0.00"))
-    if total_labor_hours > 0:
-        quote.quoted_labor_hours = total_labor_hours.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        quote.hourly_labor_rate = (total_labor_revenue / total_labor_hours).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    db.commit()
+                line.unit_cost = submitted_rate
+                line.labor_hours = quantity
+                line.line_type = "Labor"
+            else:
+                if submitted_markup_raw not in (None, ""):
+                    submitted_markup = parse_decimal(submitted_markup_raw, "0.00")
+                    line.unit_price = (unit_cost * (Decimal("1.00") + (submitted_markup / Decimal("100.00")))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                else:
+                    line.unit_price = submitted_rate
+                line.labor_hours = Decimal("0.00")
+                line.line_type = "Variable Cost" if line.is_variable_cost else "Imported"
+
+        labor_lines = [line for line in quote.lines if line.line_type == "Labor" and not line.is_section_header]
+        total_labor_hours = sum((Decimal(line.quantity or Decimal("0.00")) for line in labor_lines), Decimal("0.00"))
+        total_labor_revenue = sum((Decimal(line.quantity or Decimal("0.00")) * Decimal(line.unit_price or Decimal("0.00")) for line in labor_lines), Decimal("0.00"))
+        if total_labor_hours > 0:
+            quote.quoted_labor_hours = total_labor_hours.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            quote.hourly_labor_rate = (total_labor_revenue / total_labor_hours).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Save Locally failed: {type(exc).__name__}: {exc}") from exc
+
     return RedirectResponse(f"/quotes/{quote.id}?saved=1", status_code=303)
 
 
