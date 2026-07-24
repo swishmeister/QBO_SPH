@@ -31,7 +31,7 @@ from .qbo_client import (
     fetch_estimates_from_date,
     qbo_query,
     revoke_qbo_tokens,
-    update_qbo_estimate_sph_value,
+    update_qbo_estimate_sph,
     update_qbo_item_prices,
 )
 
@@ -197,12 +197,23 @@ def get_qbo_status(db: Session) -> dict[str, str | bool | None]:
     }
 
 
+def _settings_list(attr_name: str, default: list[str]) -> list[str]:
+    """Return a normalized list setting even if Render is running an older config.py."""
+    raw_value = getattr(settings, attr_name, default)
+    if raw_value is None:
+        return default
+    if isinstance(raw_value, str):
+        return [part.strip().upper() for part in raw_value.split(",") if part.strip()]
+    return [str(part).strip().upper() for part in raw_value if str(part).strip()]
+
+
 def is_variable_cost_item_name(name: str | None) -> bool:
     if not name:
         return False
+    variable_codes = set(_settings_list("variable_cost_item_codes", ["MC", "MI", "MP"]))
     final_segment = name.split(":")[-1].strip().upper()
     first_token = final_segment.split()[0].strip().upper() if final_segment.split() else final_segment
-    return final_segment in settings.variable_cost_item_codes or first_token in settings.variable_cost_item_codes
+    return final_segment in variable_codes or first_token in variable_codes
 
 
 def item_is_variable(item: QboItem | None, fallback_name: str | None = None) -> bool:
@@ -226,8 +237,9 @@ def _name_segments(name: str | None) -> list[str]:
 
 def is_labor_item_name(name: str | None) -> bool:
     """Return True for QBO labor service codes such as LC:MA, LC:PL, etc."""
+    labor_prefixes = _settings_list("labor_item_prefixes", ["LC:"])
     for segment in _name_segments(name):
-        for prefix in settings.labor_item_prefixes:
+        for prefix in labor_prefixes:
             normalized_prefix = prefix.strip().upper()
             if normalized_prefix and segment.startswith(normalized_prefix):
                 return True
@@ -236,77 +248,6 @@ def is_labor_item_name(name: str | None) -> bool:
 
 def item_is_labor(item: QboItem | None, fallback_name: str | None = None) -> bool:
     return is_labor_item_name(fallback_name or (item.fully_qualified_name if item else None) or (item.name if item else None))
-
-
-def calculate_sph_from_submitted_quote_form(form, quote: Quote) -> dict[str, Decimal]:
-    """Calculate SPH directly from the submitted worksheet values.
-
-    This function intentionally does not rely on Save Locally or persisted quote
-    line values. It is used by Upload SPH to QBO so the number uploaded matches
-    what is currently visible on the estimate screen.
-    """
-    revenue = Decimal("0.00")
-    cost_total = Decimal("0.00")
-    gross_markup = Decimal("0.00")
-    detected_labor_hours = Decimal("0.00")
-    detected_labor_revenue = Decimal("0.00")
-
-    for line in sorted(list(quote.lines), key=lambda x: x.sort_order or 0):
-        prefix = f"line_{line.id}_"
-        has_submitted_line = (prefix + "description") in form or (prefix + "product_service") in form
-        if not has_submitted_line:
-            continue
-
-        product_service = str(form.get(prefix + "product_service") or "").strip()
-        description = str(form.get(prefix + "description") or "").strip()
-        quantity = parse_decimal(form.get(prefix + "quantity"), "0.00")
-        unit_cost = parse_decimal(form.get(prefix + "unit_cost"), "0.00")
-        submitted_rate = parse_decimal(form.get(prefix + "unit_price"), "0.00")
-        submitted_markup_raw = form.get(prefix + "markup_percent")
-        calc_source = str(form.get(prefix + "calc_source") or "").strip()
-
-        numeric_is_empty = quantity == 0 and unit_cost == 0 and submitted_rate == 0 and submitted_markup_raw in (None, "")
-        if product_service == "" and numeric_is_empty:
-            # Description-only/header rows do not affect totals or SPH.
-            continue
-
-        labor_item = is_labor_item_name(product_service or line.qbo_item_name or line.product_service_name or description)
-
-        if labor_item:
-            # LC:* lines supply quoted hours and labor rate. They do not create
-            # gross material markup for SPH.
-            detected_labor_hours += quantity
-            detected_labor_revenue += quantity * submitted_rate
-            continue
-
-        rate = submitted_rate
-        if calc_source in {"cost-input", "markup-input"} and submitted_markup_raw not in (None, ""):
-            submitted_markup = parse_decimal(submitted_markup_raw, "0.00")
-            rate = (unit_cost * (Decimal("1.00") + (submitted_markup / Decimal("100.00")))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-
-        line_revenue = quantity * rate
-        line_cost = quantity * unit_cost
-        revenue += line_revenue
-        cost_total += line_cost
-        gross_markup += line_revenue - line_cost
-
-    quoted_labor_hours = parse_decimal(form.get("quoted_labor_hours"), "0.00")
-    hourly_labor_rate = parse_decimal(form.get("hourly_labor_rate"), "0.00")
-
-    if detected_labor_hours > 0:
-        quoted_labor_hours = detected_labor_hours.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        hourly_labor_rate = (detected_labor_revenue / detected_labor_hours).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-
-    sph = Decimal("0.00") if quoted_labor_hours == 0 else (gross_markup / quoted_labor_hours) + hourly_labor_rate
-
-    return {
-        "revenue": revenue.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
-        "cost": cost_total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
-        "gross_markup": gross_markup.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
-        "quoted_labor_hours": quoted_labor_hours.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
-        "hourly_labor_rate": hourly_labor_rate.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
-        "sph": sph.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
-    }
 
 
 def find_cached_item(db: Session, qbo_item_id: str | None) -> QboItem | None:
@@ -794,33 +735,19 @@ def delete_quote_line(quote_id: int, line_id: int, db: Annotated[Session, Depend
 
 
 @app.post("/quotes/{quote_id}/upload-sph")
-async def upload_sph_to_qbo(quote_id: int, request: Request, db: Annotated[Session, Depends(get_db)]):
+async def upload_sph_to_qbo(quote_id: int, db: Annotated[Session, Depends(get_db)]):
     if settings.qbo_read_only:
         raise HTTPException(status_code=400, detail="QBO read-only mode is enabled. Disable QBO_READ_ONLY to upload SPH to QuickBooks.")
     quote = db.get(Quote, quote_id)
     if quote is None:
         raise HTTPException(status_code=404, detail="Quote not found")
-    if not quote.qbo_estimate_id:
-        raise HTTPException(status_code=400, detail="This quote is not linked to a QBO Estimate, so SPH cannot be uploaded.")
-
-    form = await request.form()
     try:
-        submitted_totals = calculate_sph_from_submitted_quote_form(form, quote)
-        await update_qbo_estimate_sph_value(db, quote.qbo_estimate_id, submitted_totals["sph"])
+        await update_qbo_estimate_sph(db, quote)
     except QboError as exc:
-        raise HTTPException(status_code=400, detail=f"Upload SPH failed: {exc}") from exc
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Upload SPH failed: {type(exc).__name__}: {exc}") from exc
-
-    # Store only the uploaded SPH timestamp and top-level labor values for reference.
-    # The worksheet lines themselves do not need Save Locally before uploading SPH.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     quote.sph_uploaded_at = datetime.now(timezone.utc)
-    quote.quoted_labor_hours = submitted_totals["quoted_labor_hours"]
-    quote.hourly_labor_rate = submitted_totals["hourly_labor_rate"]
     db.commit()
-    return RedirectResponse(f"/quotes/{quote.id}?uploaded_sph=1&sph={submitted_totals['sph']}", status_code=303)
+    return RedirectResponse(f"/quotes/{quote.id}?uploaded_sph=1", status_code=303)
 
 
 @app.post("/quotes/{quote_id}/sync-estimate")
