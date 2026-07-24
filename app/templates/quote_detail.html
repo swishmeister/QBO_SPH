@@ -53,10 +53,10 @@
             </thead>
             <tbody>
             {% for line in quote.lines|sort(attribute='sort_order') %}
-                <tr id="line-{{ line.id }}" class="sheet-row {% if line.is_section_header %}section-row{% endif %} {% if line.is_variable_cost %}variable-cost-row{% endif %}" data-line-id="{{ line.id }}">
+                <tr id="line-{{ line.id }}" class="sheet-row {% if line.is_section_header %}section-row{% endif %} {% if line.is_variable_cost %}variable-cost-row{% endif %} {% if line.line_type == 'Labor' %}labor-row{% endif %}" data-line-id="{{ line.id }}">
                     <td>
                         <input class="cell-input product-input" name="line_{{ line.id }}_product_service" list="qbo-item-list" value="{{ line.product_service_name or line.qbo_item_name or '' }}" placeholder="Product/Service">
-                        {% if line.is_variable_cost %}<span class="mini-tag">Variable cost</span>{% endif %}
+                        {% if line.is_variable_cost %}<span class="mini-tag">Variable cost</span>{% endif %}{% if line.line_type == 'Labor' %}<span class="mini-tag labor-tag">Labor</span>{% endif %}
                     </td>
                     <td><input class="cell-input description-input" name="line_{{ line.id }}_description" value="{{ line.description }}" placeholder="Description"></td>
                     <td><input class="cell-input num qty-input" name="line_{{ line.id }}_quantity" type="number" step="0.01" value="{{ line.quantity if not line.is_section_header else '' }}"></td>
@@ -110,15 +110,21 @@
         const rateEl = row.querySelector('.rate-input');
         const amountEl = row.querySelector('.amount-cell');
         const isHeader = row.classList.contains('section-row');
+        const isLabor = row.classList.contains('labor-row') || (row.querySelector('.product-input')?.value || '').trim().toUpperCase().includes('LC:');
         if (isHeader) {
             amountEl.textContent = '';
             return { revenue: 0, cost: 0, markup: 0 };
         }
         const qty = num(qtyEl.value);
-        const cost = num(costEl.value);
+        let cost = num(costEl.value);
         let markup = num(markupEl.value);
         let rate = num(rateEl.value);
-        if (sourceClass === 'markup-input' || sourceClass === 'cost-input') {
+        if (isLabor) {
+            cost = rate;
+            markup = 0;
+            costEl.value = rate.toFixed(2);
+            markupEl.value = '0.00';
+        } else if (sourceClass === 'markup-input' || sourceClass === 'cost-input') {
             rate = cost * (1 + markup / 100);
             rateEl.value = rate.toFixed(2);
         } else if (sourceClass === 'rate-input') {
@@ -128,14 +134,20 @@
         const revenue = qty * rate;
         const totalCost = qty * cost;
         amountEl.textContent = money(revenue);
-        return { revenue, cost: totalCost, markup: revenue - totalCost };
+        return { revenue, cost: totalCost, markup: revenue - totalCost, laborHours: isLabor ? qty : 0, laborRevenue: isLabor ? revenue : 0 };
     }
     function updateTotals(sourceClass) {
-        let revenue = 0, cost = 0, grossMarkup = 0;
+        let revenue = 0, cost = 0, grossMarkup = 0, detectedLaborHours = 0, detectedLaborRevenue = 0;
         document.querySelectorAll('#estimate-sheet tbody tr.sheet-row').forEach(row => {
             const vals = updateRow(row, sourceClass);
             revenue += vals.revenue; cost += vals.cost; grossMarkup += vals.markup;
+            detectedLaborHours += vals.laborHours || 0;
+            detectedLaborRevenue += vals.laborRevenue || 0;
         });
+        if (detectedLaborHours > 0 && !document.activeElement.matches('#quoted-labor-hours,#hourly-labor-rate')) {
+            document.getElementById('quoted-labor-hours').value = detectedLaborHours.toFixed(2);
+            document.getElementById('hourly-labor-rate').value = (detectedLaborRevenue / detectedLaborHours).toFixed(2);
+        }
         const laborHours = num(document.getElementById('quoted-labor-hours').value);
         const laborRate = num(document.getElementById('hourly-labor-rate').value);
         const sph = laborHours === 0 ? 0 : (grossMarkup / laborHours) + laborRate;
@@ -145,7 +157,7 @@
         document.getElementById('sph-value').textContent = money(sph) + '/hr';
     }
     document.addEventListener('input', function(e){
-        if (e.target.matches('.qty-input,.cost-input,.markup-input,.rate-input,#quoted-labor-hours,#hourly-labor-rate')) {
+        if (e.target.matches('.qty-input,.cost-input,.markup-input,.rate-input,.product-input,#quoted-labor-hours,#hourly-labor-rate')) {
             updateTotals(e.target.classList.contains('cost-input') ? 'cost-input' : e.target.classList.contains('markup-input') ? 'markup-input' : e.target.classList.contains('rate-input') ? 'rate-input' : '');
         }
     });

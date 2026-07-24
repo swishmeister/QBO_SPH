@@ -137,3 +137,8 @@ python -m venv .venv
 ```
 
 For local development, set `SECURE_COOKIES=false` and use sandbox credentials.
+
+
+### Labor item rule
+
+Labor service codes are detected by the `LABOR_ITEM_PREFIXES` setting. The default is `LC:` so items like `LC:MA Labor maintenance` and `LC:PL Planting` are treated as labor. On import, their quantity is counted as quoted labor hours and their rate is used as the hourly labor rate. Labor line cost is set equal to rate so labor contributes to quoted hours/rate but does not inflate gross item markup.

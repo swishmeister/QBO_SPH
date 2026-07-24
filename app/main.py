@@ -198,6 +198,33 @@ def item_is_variable(item: QboItem | None, fallback_name: str | None = None) -> 
     return is_variable_cost_item_name(fallback_name or (item.fully_qualified_name if item else None) or (item.name if item else None))
 
 
+def _name_segments(name: str | None) -> list[str]:
+    if not name:
+        return []
+    cleaned = str(name).strip()
+    parts = [part.strip().upper() for part in cleaned.split(":") if part.strip()]
+    segments = [cleaned.upper()]
+    segments.extend(parts)
+    # Rebuild adjacent pairs so names like "LC:MA Labor maintenance" are recognized as one code segment.
+    for idx in range(len(parts) - 1):
+        segments.append(f"{parts[idx]}:{parts[idx + 1]}")
+    return segments
+
+
+def is_labor_item_name(name: str | None) -> bool:
+    """Return True for QBO labor service codes such as LC:MA, LC:PL, etc."""
+    for segment in _name_segments(name):
+        for prefix in settings.labor_item_prefixes:
+            normalized_prefix = prefix.strip().upper()
+            if normalized_prefix and segment.startswith(normalized_prefix):
+                return True
+    return False
+
+
+def item_is_labor(item: QboItem | None, fallback_name: str | None = None) -> bool:
+    return is_labor_item_name(fallback_name or (item.fully_qualified_name if item else None) or (item.name if item else None))
+
+
 def find_cached_item(db: Session, qbo_item_id: str | None) -> QboItem | None:
     if not qbo_item_id:
         return None
@@ -269,20 +296,26 @@ def qbo_estimate_line_to_quote_line(db: Session, estimate_line: dict, quote_id: 
     cached_item = find_cached_item(db, qbo_item_id)
     qbo_item_name = item_ref.get("name") or (cached_item.fully_qualified_name if cached_item else None) or (cached_item.name if cached_item else None)
     variable_cost = item_is_variable(cached_item, qbo_item_name)
+    labor_item = item_is_labor(cached_item, qbo_item_name)
 
     qty = decimal_from_qbo(detail.get("Qty"), "1.00")
     unit_price = detail.get("UnitPrice")
     if unit_price is None and qty != 0:
         unit_price = decimal_from_qbo(estimate_line.get("Amount"), "0.00") / qty
 
-    if existing is None:
+    imported_unit_price = decimal_from_qbo(unit_price, "0.00")
+    if labor_item:
+        # Labor service codes such as LC:MA and LC:PL represent quoted hours.
+        # Set cost equal to the labor rate so labor contributes hours/rate but not gross item markup.
+        unit_cost = imported_unit_price
+    elif existing is None:
         unit_cost = Decimal("0.00") if variable_cost else Decimal(cached_item.purchase_cost or Decimal("0.00")) if cached_item else Decimal("0.00")
     else:
         unit_cost = Decimal(existing.unit_cost or Decimal("0.00"))
 
     description = estimate_line.get("Description") or qbo_item_name or "Imported QBO estimate line"
     line = existing or QuoteLine(quote_id=quote_id)
-    line.line_type = "Variable Cost" if variable_cost else "Imported"
+    line.line_type = "Labor" if labor_item else ("Variable Cost" if variable_cost else "Imported")
     line.qbo_line_id = str(estimate_line.get("Id")) if estimate_line.get("Id") is not None else line.qbo_line_id
     line.qbo_item_id = qbo_item_id
     line.qbo_item_name = qbo_item_name
@@ -290,7 +323,8 @@ def qbo_estimate_line_to_quote_line(db: Session, estimate_line: dict, quote_id: 
     line.description = str(description)
     line.quantity = qty
     line.unit_cost = unit_cost
-    line.unit_price = decimal_from_qbo(unit_price, "0.00")
+    line.unit_price = imported_unit_price
+    line.labor_hours = qty if labor_item else Decimal("0.00")
     line.include_on_qbo_estimate = True
     line.is_section_header = False
     line.is_variable_cost = variable_cost
@@ -336,6 +370,13 @@ def upsert_quote_from_qbo_estimate(db: Session, estimate: dict) -> Quote:
     for line in list(quote.lines):
         if line.id and line.id not in seen_line_ids:
             db.delete(line)
+
+    labor_lines = [line for line in quote.lines if line.line_type == "Labor" and not line.is_section_header]
+    total_labor_hours = sum((Decimal(line.quantity or Decimal("0.00")) for line in labor_lines), Decimal("0.00"))
+    total_labor_revenue = sum((Decimal(line.quantity or Decimal("0.00")) * Decimal(line.unit_price or Decimal("0.00")) for line in labor_lines), Decimal("0.00"))
+    if total_labor_hours > 0:
+        quote.quoted_labor_hours = total_labor_hours.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        quote.hourly_labor_rate = (total_labor_revenue / total_labor_hours).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     return quote
 
 
@@ -549,12 +590,24 @@ async def save_quote_sheet(quote_id: int, request: Request, db: Annotated[Sessio
             line.qbo_item_id = matched.qbo_id
             line.qbo_item_name = matched.fully_qualified_name or matched.name
             line.is_variable_cost = matched.variable_cost
+        labor_item = is_labor_item_name(line.product_service_name or line.qbo_item_name)
         line.description = str(form.get(prefix + "description") or "").strip()
         line.quantity = parse_decimal(form.get(prefix + "quantity"), "0.00")
         line.unit_cost = parse_decimal(form.get(prefix + "unit_cost"), "0.00")
         line.unit_price = parse_decimal(form.get(prefix + "unit_price"), "0.00")
+        if labor_item:
+            line.unit_cost = line.unit_price
+            line.labor_hours = line.quantity
+        else:
+            line.labor_hours = Decimal("0.00")
         line.is_section_header = line.product_service_name == "" and line.quantity == 0 and line.unit_cost == 0 and line.unit_price == 0
-        line.line_type = "Header" if line.is_section_header else ("Variable Cost" if line.is_variable_cost else "Imported")
+        line.line_type = "Header" if line.is_section_header else ("Labor" if labor_item else ("Variable Cost" if line.is_variable_cost else "Imported"))
+    labor_lines = [line for line in quote.lines if line.line_type == "Labor" and not line.is_section_header]
+    total_labor_hours = sum((Decimal(line.quantity or Decimal("0.00")) for line in labor_lines), Decimal("0.00"))
+    total_labor_revenue = sum((Decimal(line.quantity or Decimal("0.00")) * Decimal(line.unit_price or Decimal("0.00")) for line in labor_lines), Decimal("0.00"))
+    if total_labor_hours > 0:
+        quote.quoted_labor_hours = total_labor_hours.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        quote.hourly_labor_rate = (total_labor_revenue / total_labor_hours).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     db.commit()
     return RedirectResponse(f"/quotes/{quote.id}?saved=1", status_code=303)
 

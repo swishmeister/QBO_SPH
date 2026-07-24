@@ -29,6 +29,7 @@ class Settings(BaseModel):
     qbo_cf_sph_id: str = os.getenv("QBO_CF_SPH_ID", os.getenv("QBO_CF_PROFIT_PER_HOUR_ID", "3"))
     qbo_cf_sph_name: str = os.getenv("QBO_CF_SPH_NAME", "SPH")
     variable_cost_item_codes: list[str] = _env_list("VARIABLE_COST_ITEM_CODES", "MC,MI,MP")
+    labor_item_prefixes: list[str] = _env_list("LABOR_ITEM_PREFIXES", "LC:")
     app_username: str = os.getenv("APP_USERNAME", "")
     app_password: str = os.getenv("APP_PASSWORD", "")
     require_basic_auth: bool = _env_bool("REQUIRE_BASIC_AUTH", "false")

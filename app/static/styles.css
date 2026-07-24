@@ -90,3 +90,37 @@ th { color:#667085; font-size:12px; text-transform:uppercase; letter-spacing:.04
     .hero, .quote-head, .sheet-toolbar { display:block; }
     .actions { justify-content:flex-start; margin-top:12px; }
 }
+
+/* Spreadsheet editor v2: tighter QuickBooks Desktop-style sheet */
+body { background:#eef3f8; }
+.container { max-width: none; margin: 10px auto; padding: 0 14px 34px; }
+.card.sheet-card { border-radius: 3px; box-shadow: none; border-color:#9fb1c6; }
+.sheet-card .sheet-toolbar { padding: 8px 10px; border-bottom:1px solid #b8c7d8; background:#f8fbff; }
+.sheet-card .sheet-toolbar h2 { font-size:16px; margin:0; }
+.sheet-card .sheet-toolbar p { margin:2px 0 0; }
+.sheet-scroll { max-height: 70vh; overflow:auto; background:#fff; }
+table.estimate-sheet { border-collapse:collapse !important; border-spacing:0; width:100%; min-width: 1320px; table-layout: fixed; font-family: Arial, Helvetica, sans-serif; font-size: 12px; }
+table.estimate-sheet th { height:22px; padding:0 5px; background:#ffffff; color:#7a8493; font-size:10px; font-weight:700; text-transform:uppercase; border:1px solid #b8c7d8; position: sticky; top: 0; z-index: 4; }
+table.estimate-sheet td { height:20px; padding:0; border:1px solid #c5d3e2; vertical-align:middle; }
+table.estimate-sheet tbody tr:nth-child(even) { background:#e7f2ff !important; }
+table.estimate-sheet tbody tr:nth-child(odd) { background:#fff !important; }
+table.estimate-sheet tbody tr.labor-row { background:#eef9f0 !important; }
+table.estimate-sheet tbody tr.variable-cost-row { background:#fff6df !important; }
+table.estimate-sheet tbody tr.section-row { background:#f7fbff !important; font-weight:700; }
+.cell-input { height:20px; min-height:20px; padding:1px 4px; border:0 !important; border-radius:0 !important; box-shadow:none !important; background:transparent; font-family: Arial, Helvetica, sans-serif; font-size:12px; }
+.cell-input.num { text-align:right; font-variant-numeric: tabular-nums; }
+.cell-input:focus { outline:2px solid #3399ff; outline-offset:-2px; background:#fff; }
+.amount-cell { padding:1px 5px !important; text-align:right; font-variant-numeric: tabular-nums; background:rgba(255,255,255,.28); }
+.delete-cell { padding:0 4px !important; text-align:center; }
+.delete-button { font-size:11px; color:#b42318; }
+.col-product { width: 260px; }
+.col-description { width: 560px; }
+.col-qty { width: 70px; }
+.col-money { width: 100px; }
+.col-markup { width: 95px; }
+.col-delete { width: 70px; }
+.mini-tag { font-size:9px; padding:1px 4px; margin-left:3px; }
+.labor-tag { background:#dcfae6; color:#067647; }
+.sph-bar.card { border-radius:3px; box-shadow:none; padding:10px; grid-template-columns: 160px 160px repeat(4, minmax(140px, 1fr)); }
+.sph-input input { height:26px; border-radius:3px; padding:3px 6px; }
+.sph-metric strong { font-size:18px; }
