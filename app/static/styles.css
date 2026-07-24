@@ -375,3 +375,63 @@ table.estimate-sheet tbody tr.section-row { background:#f7fbff !important; font-
     }
     .connection-card .compact-action { width:100%; }
 }
+
+/* App-activity recent estimates and cleaner home screen */
+.streamlined-topbar { justify-content:flex-start; }
+.nav-pills a {
+    display:inline-flex;
+    align-items:center;
+    min-height:32px;
+    padding:7px 12px;
+    border:1px solid #c7d0dd;
+    border-radius:999px;
+    background:#f8fafc;
+    box-shadow:0 1px 3px rgba(17,24,39,.04);
+}
+.nav-pills a:hover { text-decoration:none; background:#eef4ff; border-color:#9db5d5; }
+.clean-home-hero { display:block; }
+.clean-home-hero h1 { margin-bottom:4px; }
+.home-nav-grid {
+    display:grid;
+    grid-template-columns: repeat(2, minmax(220px, 1fr));
+    gap:12px;
+    margin-top:14px;
+}
+.home-nav-card {
+    display:block;
+    text-decoration:none;
+    color:#172033;
+    border:1px solid #c7d0dd;
+    border-radius:12px;
+    background:#fbfcfe;
+    padding:16px;
+    box-shadow:0 3px 10px rgba(17,24,39,.035);
+}
+.home-nav-card:hover { border-color:#8da7c8; background:#f4f8ff; }
+.home-nav-card span { display:block; font-size:17px; font-weight:800; margin-bottom:4px; }
+.home-nav-card strong { display:block; color:#667085; font-size:13px; font-weight:650; }
+.recent-card { margin-top:12px; }
+.range-refresh-form {
+    display:flex;
+    align-items:end;
+    gap:8px;
+    flex-wrap:wrap;
+}
+.range-label {
+    display:grid;
+    gap:4px;
+    font-size:12px;
+    text-transform:uppercase;
+    color:#667085;
+}
+.range-label select { min-width:150px; text-transform:none; color:#172033; }
+.library-actions { align-items:end; }
+@media (max-width: 760px) {
+    .streamlined-topbar { padding-bottom:8px; }
+    .nav-pills a { border-radius:9px; padding:9px 11px; background:#fff; }
+    .home-nav-grid { grid-template-columns:1fr; }
+    .home-nav-card { padding:14px; }
+    .range-refresh-form { width:100%; display:grid; grid-template-columns:1fr; }
+    .range-label select { width:100%; }
+    .library-actions { display:grid; grid-template-columns:1fr; width:100%; }
+}

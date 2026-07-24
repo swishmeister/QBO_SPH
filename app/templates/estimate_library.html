@@ -1,14 +1,23 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="card hero slim-hero">
+<section class="card hero slim-hero library-hero">
     <div>
         <h1>Estimate Library</h1>
-        <p>Search local estimates and quickly import or refresh recent QBO estimates.</p>
+        <p>Search local estimates or refresh a selected date range from QuickBooks.</p>
     </div>
-    <div class="actions">
-        <form method="post" action="/estimates/import-recent"><button class="button primary" type="submit" {% if not qbo.connected %}disabled{% endif %}>Refresh Last {{ default_refresh_days }} Days</button></form>
-        <form method="post" action="/estimates/import-90"><button class="button" type="submit" {% if not qbo.connected %}disabled{% endif %}>Refresh Last 90 Days</button></form>
-        <form method="post" action="/estimates/import-year"><button class="button" type="submit" {% if not qbo.connected %}disabled{% endif %}>Refresh Year-to-Date</button></form>
+    <div class="actions library-actions">
+        <form class="range-refresh-form" method="post" action="/estimates/import-range">
+            <label class="range-label">
+                <span>Refresh range</span>
+                <select name="refresh_range" {% if not qbo.connected %}disabled{% endif %}>
+                    <option value="30" selected>Last 30 days</option>
+                    <option value="60">Last 60 days</option>
+                    <option value="90">Last 90 days</option>
+                    <option value="ytd">Year-to-date</option>
+                </select>
+            </label>
+            <button class="button primary" type="submit" {% if not qbo.connected %}disabled{% endif %}>Refresh</button>
+        </form>
         <a class="button" href="/qbo/import-estimate">Import Estimate #</a>
     </div>
 </section>
@@ -42,7 +51,7 @@
                     <td data-label="Actions"><a class="button mobile-inline-button" href="/quotes/{{ quote.id }}">Open</a></td>
                 </tr>
             {% else %}
-                <tr><td colspan="8">No estimates found. Refresh recent estimates or import an older estimate by number.</td></tr>
+                <tr><td colspan="8">No estimates found. Refresh a date range or import an older estimate by number.</td></tr>
             {% endfor %}
             </tbody>
         </table>

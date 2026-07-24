@@ -4,27 +4,16 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>SPH Calculator and File Editor</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260724-home-recent-refresh">
+    <link rel="stylesheet" href="/static/styles.css?v=20260724-app-activity-home-cleanup">
 </head>
 <body>
-<header class="topbar">
+<header class="topbar streamlined-topbar">
     <div class="brand-group">
         <a class="brand" href="/">SPH Calculator</a>
-        <nav class="main-nav">
+        <nav class="main-nav nav-pills" aria-label="Primary navigation">
             <a href="/estimates">Estimate Library</a>
             <a href="/items">Item Price Manager</a>
-            <a href="/qbo/import-estimate">Import Estimate #</a>
         </nav>
-    </div>
-    <div class="qbo-status">
-        <span class="badge">{{ qbo.env|capitalize }}</span>
-        {% if qbo.read_only %}<span class="badge warn">Read-only</span>{% endif %}
-        {% if qbo.connected %}
-            <span class="badge good">QBO Connected</span>
-            <span class="subtle">{{ qbo.company_name or ('Realm ' ~ qbo.realm_id) }}</span>
-        {% else %}
-            <span class="badge warn">QBO Not Connected</span>
-        {% endif %}
     </div>
 </header>
 <main class="container">

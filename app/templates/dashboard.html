@@ -1,43 +1,29 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="card hero">
+<section class="card home-hero clean-home-hero">
     <div>
-        <h1>SPH and pricing dashboard</h1>
-        <p>Open the estimate library, calculate SPH from gross markup, and manage QBO item purchase/sale prices.</p>
+        <h1>SPH Calculator</h1>
+        <p>Open your estimate library or manage item pricing.</p>
     </div>
-    <div class="actions">
-        <a class="button primary" href="/estimates">Open Estimate Library</a>
-        <a class="button" href="/items">Open Item Price Manager</a>
-        {% if not qbo.connected %}<a class="button" href="/qbo/connect">Connect to QuickBooks</a>{% endif %}
+    <div class="home-nav-grid">
+        <a class="home-nav-card" href="/estimates">
+            <span>Estimate Library</span>
+            <strong>Find, refresh, and open estimates</strong>
+        </a>
+        <a class="home-nav-card" href="/items">
+            <span>Item Price Manager</span>
+            <strong>Edit item purchase and sale prices</strong>
+        </a>
     </div>
 </section>
 
 {% if request.query_params.get('recent_refreshed') %}<div class="notice success">Recent estimates refreshed.</div>{% endif %}
 
-<section class="metrics wide-metrics">
-    <div class="card metric"><span>Imported estimates</span><strong>{{ quote_count }}</strong></div>
-    <div class="card metric"><span>Imported items</span><strong>{{ item_count }}</strong></div>
-    <div class="card metric"><span>Pending item price changes</span><strong>{{ pending_price_changes }}</strong></div>
-    <div class="card metric"><span>Mode</span><strong>{{ 'Read-only' if qbo.read_only else 'Write enabled' }}</strong></div>
-</section>
-
-<section class="card connection-card">
-    <h2>QuickBooks connection</h2>
-    {% if qbo.connected %}
-        <p>Connected to <strong>{{ qbo.company_name or qbo.realm_id }}</strong>.</p>
-        {% if qbo.read_only %}<p><span class="badge warn">Read-only mode</span> Uploads to QBO are blocked.</p>{% endif %}
-        <form method="post" action="/qbo/disconnect"><button class="button danger compact-action" type="submit">Disconnect QuickBooks</button></form>
-    {% else %}
-        <p>Connect before importing estimates or items.</p>
-        <a class="button compact-action" href="/qbo/connect">Connect to QuickBooks</a>
-    {% endif %}
-</section>
-
-<section class="card">
+<section class="card recent-card">
     <div class="section-title-row">
         <div>
             <h2>Recent estimates</h2>
-            <p class="subtle">Most recently updated or interacted-with estimates in the local app.</p>
+            <p class="subtle">Estimates recently opened or used in this app.</p>
         </div>
         <a class="icon-button refresh-button" href="/recent-estimates/refresh" aria-label="Refresh recent estimates" title="Refresh recent estimates">↻</a>
     </div>
@@ -56,6 +42,6 @@
             {% endfor %}
             </tbody>
         </table>
-    {% else %}<p>No estimates imported yet.</p>{% endif %}
+    {% else %}<p>No recent app activity yet. Open an estimate from the Estimate Library and it will appear here.</p>{% endif %}
 </section>
 {% endblock %}

@@ -65,6 +65,7 @@ def _run_lightweight_migrations() -> None:
             "qbo_last_updated_time": "TIMESTAMP WITH TIME ZONE",
             "last_synced_at": "TIMESTAMP WITH TIME ZONE",
             "sph_uploaded_at": "TIMESTAMP WITH TIME ZONE",
+            "last_interacted_at": "TIMESTAMP WITH TIME ZONE",
         },
         "quote_lines": {
             "qbo_line_id": "VARCHAR(64)",
@@ -283,6 +284,7 @@ def calculate_sph_from_submitted_quote_form(form, quote: Quote) -> dict[str, Dec
             continue
 
         labor_item = is_labor_item_name(product_service or line.qbo_item_name or line.product_service_name or description)
+        variable_item = line.is_variable_cost or is_variable_cost_item_name(product_service or line.qbo_item_name or line.product_service_name or description)
 
         if labor_item:
             # LC:* lines supply quoted hours and labor rate. They do not create
@@ -292,7 +294,13 @@ def calculate_sph_from_submitted_quote_form(form, quote: Quote) -> dict[str, Dec
             continue
 
         rate = submitted_rate
-        if calc_source in {"cost-input", "markup-input"} and submitted_markup_raw not in (None, ""):
+        if variable_item:
+            # Variable-cost rows keep the imported QBO estimate rate when cost changes.
+            # Only a direct markup edit should recalculate the sale rate.
+            if calc_source == "markup-input" and submitted_markup_raw not in (None, ""):
+                submitted_markup = parse_decimal(submitted_markup_raw, "0.00")
+                rate = (unit_cost * (Decimal("1.00") + (submitted_markup / Decimal("100.00")))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        elif calc_source in {"cost-input", "markup-input"} and submitted_markup_raw not in (None, ""):
             submitted_markup = parse_decimal(submitted_markup_raw, "0.00")
             rate = (unit_cost * (Decimal("1.00") + (submitted_markup / Decimal("100.00")))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
@@ -334,6 +342,12 @@ def find_item_by_name(db: Session, name: str | None) -> QboItem | None:
     return db.scalar(
         select(QboItem).where((QboItem.name == cleaned) | (QboItem.fully_qualified_name == cleaned)).limit(1)
     )
+
+
+def touch_quote(quote: Quote | None) -> None:
+    """Mark a quote as recently used inside this app for the dashboard list."""
+    if quote is not None:
+        quote.last_interacted_at = datetime.now(timezone.utc)
 
 
 def upsert_qbo_item(db: Session, item: dict, *, keep_local_edits: bool = False) -> QboItem:
@@ -478,19 +492,16 @@ def upsert_quote_from_qbo_estimate(db: Session, estimate: dict) -> Quote:
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard(request: Request, db: Annotated[Session, Depends(get_db)]):
-    quote_count = db.scalar(select(func.count(Quote.id))) or 0
-    item_count = db.scalar(select(func.count(QboItem.id))) or 0
-    changed_items = db.scalars(select(QboItem)).all()
-    pending_price_changes = sum(1 for item in changed_items if item.is_changed and not item.variable_cost)
-    latest_quotes = db.scalars(select(Quote).order_by(Quote.updated_at.desc()).limit(8)).all()
+    recent_quotes = db.scalars(
+        select(Quote)
+        .order_by(Quote.last_interacted_at.desc().nullslast(), Quote.updated_at.desc().nullslast())
+        .limit(8)
+    ).all()
     return templates.TemplateResponse(
         "dashboard.html",
         {
             "request": request,
-            "quotes": latest_quotes,
-            "quote_count": quote_count,
-            "item_count": item_count,
-            "pending_price_changes": pending_price_changes,
+            "quotes": recent_quotes,
             "qbo": get_qbo_status(db),
         },
     )
@@ -618,6 +629,23 @@ async def import_estimates_since(db: Session, start: date) -> int:
     return len(estimates)
 
 
+@app.post("/estimates/import-range")
+async def import_estimates_by_range(db: Annotated[Session, Depends(get_db)], refresh_range: Annotated[str, Form()] = "30"):
+    selected = str(refresh_range or "30").strip().lower()
+    if selected == "ytd":
+        start = date.today().replace(month=1, day=1)
+        count = await import_estimates_since(db, start)
+        return RedirectResponse(f"/estimates?imported_year=1&count={count}", status_code=303)
+
+    try:
+        days = max(int(selected), 1)
+    except ValueError:
+        days = max(int(getattr(settings, "default_estimate_refresh_days", 30) or 30), 1)
+    start = date.today() - timedelta(days=days)
+    count = await import_estimates_since(db, start)
+    return RedirectResponse(f"/estimates?imported_recent=1&days={days}&count={count}", status_code=303)
+
+
 @app.post("/estimates/import-recent")
 async def import_recent_estimates(db: Annotated[Session, Depends(get_db)]):
     days = max(int(getattr(settings, "default_estimate_refresh_days", 30) or 30), 1)
@@ -655,6 +683,7 @@ async def import_estimate_from_qbo(db: Annotated[Session, Depends(get_db)], esti
     try:
         estimate = await fetch_estimate_by_doc_number_or_id(db, estimate_identifier)
         quote = upsert_quote_from_qbo_estimate(db, estimate)
+        touch_quote(quote)
         db.commit()
         db.refresh(quote)
     except QboError as exc:
@@ -671,6 +700,7 @@ async def _refresh_quote_from_qbo(quote_id: int, db: Session) -> RedirectRespons
         # This avoids DocNumber/Id query syntax issues and pulls the latest SyncToken.
         estimate = await fetch_estimate_by_id(db, quote.qbo_estimate_id)
         quote = upsert_quote_from_qbo_estimate(db, estimate)
+        touch_quote(quote)
         db.commit()
         db.refresh(quote)
     except QboError as exc:
@@ -715,6 +745,9 @@ def quote_detail(request: Request, quote_id: int, db: Annotated[Session, Depends
     quote = db.get(Quote, quote_id)
     if quote is None:
         raise HTTPException(status_code=404, detail="Quote not found")
+    touch_quote(quote)
+    db.commit()
+    db.refresh(quote)
     items = db.scalars(select(QboItem).where(QboItem.active == True).order_by(QboItem.fully_qualified_name, QboItem.name)).all()  # noqa: E712
     return templates.TemplateResponse("quote_detail.html", {"request": request, "quote": quote, "totals": quote_totals(quote), "items": items, "qbo": get_qbo_status(db)})
 
@@ -781,7 +814,15 @@ async def save_quote_sheet(quote_id: int, request: Request, db: Annotated[Sessio
                 line.labor_hours = quantity
                 line.line_type = "Labor"
             else:
-                if submitted_markup_raw not in (None, ""):
+                if line.is_variable_cost:
+                    # Variable-cost material codes keep the QBO estimate rate as the sale price.
+                    # Designers can edit cost to see SPH without accidentally repricing the line.
+                    if submitted_markup_raw not in (None, "") and str(form.get(prefix + "calc_source") or "") == "markup-input":
+                        submitted_markup = parse_decimal(submitted_markup_raw, "0.00")
+                        line.unit_price = (unit_cost * (Decimal("1.00") + (submitted_markup / Decimal("100.00")))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                    else:
+                        line.unit_price = submitted_rate
+                elif submitted_markup_raw not in (None, ""):
                     submitted_markup = parse_decimal(submitted_markup_raw, "0.00")
                     line.unit_price = (unit_cost * (Decimal("1.00") + (submitted_markup / Decimal("100.00")))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
                 else:
@@ -814,6 +855,7 @@ def add_quote_line(quote_id: int, db: Annotated[Session, Depends(get_db)]):
         raise HTTPException(status_code=404, detail="Quote not found")
     line = QuoteLine(quote_id=quote.id, line_type="Imported", description="", quantity=Decimal("1.00"), unit_cost=Decimal("0.00"), unit_price=Decimal("0.00"), sort_order=len(quote.lines) + 1)
     db.add(line)
+    touch_quote(quote)
     db.commit()
     return RedirectResponse(f"/quotes/{quote.id}#line-{line.id}", status_code=303)
 
@@ -838,6 +880,7 @@ def delete_quote_line(quote_id: int, line_id: int, db: Annotated[Session, Depend
     if line is None or line.quote_id != quote.id:
         raise HTTPException(status_code=404, detail="Line not found")
     db.delete(line)
+    touch_quote(quote)
     db.commit()
     return RedirectResponse(f"/quotes/{quote.id}", status_code=303)
 
@@ -868,6 +911,7 @@ async def upload_sph_to_qbo(quote_id: int, request: Request, db: Annotated[Sessi
     quote.sph_uploaded_at = datetime.now(timezone.utc)
     quote.quoted_labor_hours = submitted_totals["quoted_labor_hours"]
     quote.hourly_labor_rate = submitted_totals["hourly_labor_rate"]
+    touch_quote(quote)
     db.commit()
     return RedirectResponse(f"/quotes/{quote.id}?uploaded_sph=1&sph={submitted_totals['sph']}", status_code=303)
 

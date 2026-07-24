@@ -58,7 +58,7 @@
             </thead>
             <tbody>
             {% for line in quote.lines|sort(attribute='sort_order') %}
-                <tr id="line-{{ line.id }}" class="sheet-row {% if line.is_section_header %}section-row{% endif %} {% if line.is_variable_cost %}variable-cost-row{% endif %} {% if line.line_type == 'Labor' %}labor-row{% endif %}" data-line-id="{{ line.id }}">
+                <tr id="line-{{ line.id }}" class="sheet-row {% if line.is_section_header %}section-row{% endif %} {% if line.is_variable_cost %}variable-cost-row{% endif %} {% if line.line_type == 'Labor' %}labor-row{% endif %}" data-line-id="{{ line.id }}" data-variable-cost="{{ '1' if line.is_variable_cost else '0' }}">
                     <td data-label="Product/Service">
                         <input class="line-calc-source" type="hidden" name="line_{{ line.id }}_calc_source" value="">
                         <input class="cell-input product-input" name="line_{{ line.id }}_product_service" list="qbo-item-list" value="{{ line.product_service_name or line.qbo_item_name or '' }}" placeholder="Product/Service">
@@ -98,7 +98,6 @@
         <form method="post" action="/quotes/{{ quote.id }}/lines"><button class="button" type="submit">Add Item Row</button></form>
         {% if quote.qbo_estimate_id %}<button class="button primary" type="submit" form="quote-sheet-form" {% if qbo.read_only %}disabled title="QBO_READ_ONLY is enabled"{% endif %}>Upload SPH to QBO</button>{% endif %}
     </div>
-    <p class="subtle">Variable-cost items such as MC, MI, and MP ignore the QBO item-list default price on import. Enter their line-specific vendor cost here.</p>
 </section>
 
 <script>
@@ -116,6 +115,7 @@
         const amountEl = row.querySelector('.amount-cell');
         const isHeader = row.classList.contains('section-row');
         const isLabor = row.classList.contains('labor-row') || (row.querySelector('.product-input')?.value || '').trim().toUpperCase().includes('LC:');
+        const isVariableCost = row.dataset.variableCost === '1' || row.classList.contains('variable-cost-row');
         if (isHeader) {
             amountEl.textContent = '';
             return { revenue: 0, cost: 0, markup: 0 };
@@ -129,6 +129,16 @@
             markup = 0;
             costEl.value = rate.toFixed(2);
             markupEl.value = '0.00';
+        } else if (isVariableCost) {
+            // MC/MI/MP/MM-style rows keep the imported estimate rate unless markup is edited directly.
+            // Designers can edit Cost to test SPH without accidentally changing the sale price.
+            if (sourceClass === 'markup-input') {
+                rate = cost * (1 + markup / 100);
+                rateEl.value = rate.toFixed(2);
+            } else {
+                markup = cost === 0 ? 0 : ((rate - cost) / cost) * 100;
+                markupEl.value = cost === 0 ? '' : markup.toFixed(2);
+            }
         } else if (sourceClass === 'markup-input' || sourceClass === 'cost-input') {
             rate = cost * (1 + markup / 100);
             rateEl.value = rate.toFixed(2);
