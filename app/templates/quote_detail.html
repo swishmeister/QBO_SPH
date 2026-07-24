@@ -12,9 +12,10 @@
 </section>
 
 {% if request.query_params.get('refreshed') %}<div class="notice success">Estimate refreshed from QuickBooks.</div>{% endif %}
-{% if request.query_params.get('uploaded_sph') %}<div class="notice success">SPH uploaded to QuickBooks.</div>{% endif %}
+{% if request.query_params.get('uploaded') %}<div class="notice success">Estimate changes and S.P.H uploaded to QuickBooks.</div>{% endif %}
+{% if request.query_params.get('uploaded_sph') %}<div class="notice success">Estimate changes and S.P.H uploaded to QuickBooks.</div>{% endif %}
 
-<form id="quote-sheet-form" method="post" action="/quotes/{{ quote.id }}/upload-sph">
+<form id="quote-sheet-form" method="post" action="/quotes/{{ quote.id }}/upload-to-qbo">
 <section class="sph-bar card">
     <div class="sph-input">
         <label>Quoted Labor Hours</label>
@@ -38,7 +39,7 @@
         </div>
         <div class="actions">
             {% if quote.qbo_estimate_id %}
-            <button id="upload-sph-toolbar-button" class="button primary" type="submit" form="quote-sheet-form" {% if qbo.read_only %}disabled title="QBO_READ_ONLY is enabled"{% endif %}>Upload SPH to QBO</button>
+            <button id="upload-sph-toolbar-button" class="button primary" type="submit" form="quote-sheet-form" {% if qbo.read_only %}disabled title="QBO_READ_ONLY is enabled"{% endif %}>Upload to QB</button>
             {% endif %}
         </div>
     </div>
@@ -96,7 +97,7 @@
 <section class="card action-card">
     <div class="actions left">
         <form method="post" action="/quotes/{{ quote.id }}/lines"><button class="button" type="submit">Add Item Row</button></form>
-        {% if quote.qbo_estimate_id %}<button class="button primary" type="submit" form="quote-sheet-form" {% if qbo.read_only %}disabled title="QBO_READ_ONLY is enabled"{% endif %}>Upload SPH to QBO</button>{% endif %}
+        {% if quote.qbo_estimate_id %}<button class="button primary" type="submit" form="quote-sheet-form" {% if qbo.read_only %}disabled title="QBO_READ_ONLY is enabled"{% endif %}>Upload to QB</button>{% endif %}
     </div>
 </section>
 
@@ -198,9 +199,9 @@
     const form = document.getElementById('quote-sheet-form');
     if (form) {
         form.addEventListener('submit', function(){
-            // The upload route recalculates SPH server-side from the submitted
-            // worksheet. This final client-side pass keeps the visible numbers
-            // aligned with the values being submitted.
+            // The upload route recalculates S.P.H and pushes submitted worksheet
+            // line changes server-side. This final client-side pass keeps the
+            // visible numbers aligned with the values being submitted.
             const active = document.activeElement;
             const activeSource = active?.classList?.contains('markup-input') ? 'markup-input' : active?.classList?.contains('cost-input') ? 'cost-input' : active?.classList?.contains('rate-input') ? 'rate-input' : '';
             if (activeSource) {

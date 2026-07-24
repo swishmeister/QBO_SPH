@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
+import copy
 from urllib.parse import urlencode
 import base64
 import hashlib
@@ -179,8 +180,12 @@ async def qbo_query(db: Session, query: str) -> dict[str, Any]:
     return await qbo_request(db, "GET", "/query", params={"query": query})
 
 
-def _decimal_to_float(value: Decimal) -> float:
+def _decimal_to_float(value: Decimal | str | float | int) -> float:
     return float(Decimal(value or 0))
+
+
+def _format_decimal_string(value: Decimal | str | float | int) -> str:
+    return f"{Decimal(str(value or '0')).quantize(Decimal('0.01'))}"
 
 
 def _escape_qbo_query_string(value: str) -> str:
@@ -302,12 +307,109 @@ async def create_qbo_estimate(db: Session, quote: Quote) -> dict[str, Any]:
     return await qbo_request(db, "POST", "/estimate", json_body=build_estimate_payload(quote))
 
 
-async def update_qbo_estimate_sph_value(db: Session, estimate_id: str, sph_value: Decimal | str | float) -> dict[str, Any]:
-    """Update only the configured SPH custom field on an existing QBO Estimate.
+def _normalize_custom_field_name(value: str | None) -> str:
+    # QBO form labels often contain punctuation or spacing differences.
+    # Match S.P.H, SPH, and S P H as the same field name without matching
+    # unrelated fields such as Lead Source.
+    return "".join(ch for ch in (value or "").casefold() if ch.isalnum())
 
-    This intentionally does not depend on locally saved quote lines. The caller
-    should pass the SPH value calculated from the current submitted worksheet.
-    """
+
+def _set_sph_custom_field_on_estimate(estimate: dict[str, Any], sph_value: Decimal | str | float) -> list[dict[str, Any]]:
+    try:
+        sph_string = _format_decimal_string(sph_value)
+    except Exception as exc:
+        raise QboError(f"Calculated SPH value is invalid: {sph_value}") from exc
+
+    custom_fields = list(estimate.get("CustomField") or [])
+    configured_id = str(settings.qbo_cf_sph_id or "").strip()
+    configured_name = (settings.qbo_cf_sph_name or "").strip()
+    configured_name_norm = _normalize_custom_field_name(configured_name)
+    target_field = None
+
+    # Name matching is intentionally preferred and exclusive. Using DefinitionId
+    # as an OR condition can write to the wrong custom field if the configured
+    # ID is stale or belongs to a customer field such as Lead Source.
+    if configured_name_norm:
+        exact_name_matches = [
+            field for field in custom_fields
+            if (field.get("Name") or "").strip().casefold() == configured_name.casefold()
+        ]
+        normalized_name_matches = [
+            field for field in custom_fields
+            if _normalize_custom_field_name(field.get("Name")) == configured_name_norm
+        ]
+        matches = exact_name_matches or normalized_name_matches
+        if matches:
+            target_field = matches[0]
+        else:
+            available = ", ".join(
+                f"{field.get('Name') or '<blank>'} (DefinitionId {field.get('DefinitionId') or '<blank>'})"
+                for field in custom_fields
+            ) or "no CustomField entries returned by QuickBooks"
+            raise QboError(
+                f"Could not find QBO custom field named '{configured_name}' on this Estimate. "
+                f"Available custom fields: {available}. "
+                "No QuickBooks fields were updated."
+            )
+    elif configured_id:
+        id_matches = [field for field in custom_fields if str(field.get("DefinitionId")) == configured_id]
+        if id_matches:
+            target_field = id_matches[0]
+        else:
+            available = ", ".join(
+                f"{field.get('Name') or '<blank>'} (DefinitionId {field.get('DefinitionId') or '<blank>'})"
+                for field in custom_fields
+            ) or "no CustomField entries returned by QuickBooks"
+            raise QboError(
+                f"Could not find QBO custom field DefinitionId {configured_id} on this Estimate. "
+                f"Available custom fields: {available}. "
+                "No QuickBooks fields were updated."
+            )
+    else:
+        raise QboError("QBO_CF_SPH_NAME is not configured. Set it to S.P.H before uploading to QuickBooks.")
+
+    target_field["Type"] = "StringType"
+    target_field["StringValue"] = sph_string
+    return custom_fields
+
+
+def _merge_qbo_estimate_line(existing_line: dict[str, Any] | None, submitted_line: dict[str, Any]) -> dict[str, Any]:
+    detail_type = submitted_line["detail_type"]
+    if detail_type == "DescriptionOnly":
+        merged = copy.deepcopy(existing_line) if existing_line else {}
+        merged["DetailType"] = "DescriptionOnly"
+        merged["Description"] = submitted_line.get("description") or ""
+        return merged
+
+    if detail_type != "SalesItemLineDetail":
+        raise QboError(f"Unsupported estimate line detail type: {detail_type}")
+
+    item_id = str(submitted_line.get("qbo_item_id") or "").strip()
+    if not item_id:
+        raise QboError(f"Line '{submitted_line.get('description') or '<blank>'}' has no QuickBooks Product/Service selected.")
+
+    qty = Decimal(str(submitted_line.get("quantity") or "0"))
+    unit_price = Decimal(str(submitted_line.get("unit_price") or "0"))
+    amount = Decimal(str(submitted_line.get("amount") or (qty * unit_price)))
+
+    merged = copy.deepcopy(existing_line) if existing_line else {}
+    detail = copy.deepcopy((existing_line or {}).get("SalesItemLineDetail") or {})
+    detail["ItemRef"] = {
+        "value": item_id,
+        "name": submitted_line.get("qbo_item_name") or submitted_line.get("product_service_name") or submitted_line.get("description") or item_id,
+    }
+    detail["Qty"] = _decimal_to_float(qty)
+    detail["UnitPrice"] = _decimal_to_float(unit_price)
+
+    merged["DetailType"] = "SalesItemLineDetail"
+    merged["Description"] = submitted_line.get("description") or ""
+    merged["Amount"] = _decimal_to_float(amount)
+    merged["SalesItemLineDetail"] = detail
+    return merged
+
+
+async def update_qbo_estimate_sph_value(db: Session, estimate_id: str, sph_value: Decimal | str | float) -> dict[str, Any]:
+    """Update only the configured SPH custom field on an existing QBO Estimate."""
     cleaned_estimate_id = str(estimate_id or "").strip()
     if not cleaned_estimate_id:
         raise QboError("This quote is not linked to a QBO Estimate.")
@@ -317,37 +419,66 @@ async def update_qbo_estimate_sph_value(db: Session, estimate_id: str, sph_value
     if not estimate:
         raise QboError("Could not retrieve latest QBO Estimate before updating SPH.")
 
-    try:
-        sph_decimal = Decimal(str(sph_value or "0")).quantize(Decimal("0.01"))
-    except Exception as exc:
-        raise QboError(f"Calculated SPH value is invalid: {sph_value}") from exc
-
-    sph_string = f"{sph_decimal}"
-    custom_fields = list(estimate.get("CustomField") or [])
-    sph_written = False
-    configured_id = str(settings.qbo_cf_sph_id or "").strip()
-    configured_name = settings.qbo_cf_sph_name.strip().lower()
-
-    for field in custom_fields:
-        field_id_matches = configured_id and str(field.get("DefinitionId")) == configured_id
-        field_name_matches = configured_name and (field.get("Name") or "").strip().lower() == configured_name
-        if field_id_matches or field_name_matches:
-            field["Type"] = "StringType"
-            field["StringValue"] = sph_string
-            sph_written = True
-
-    if not sph_written:
-        custom_fields.append({
-            "DefinitionId": settings.qbo_cf_sph_id,
-            "Name": settings.qbo_cf_sph_name,
-            "Type": "StringType",
-            "StringValue": sph_string,
-        })
-
+    custom_fields = _set_sph_custom_field_on_estimate(estimate, sph_value)
     payload = {
         "Id": estimate["Id"],
         "SyncToken": estimate["SyncToken"],
         "sparse": True,
+        "CustomField": custom_fields,
+    }
+    return await qbo_request(db, "POST", "/estimate", json_body=payload)
+
+
+async def update_qbo_estimate_lines_and_sph(
+    db: Session,
+    estimate_id: str,
+    submitted_lines: list[dict[str, Any]],
+    sph_value: Decimal | str | float,
+) -> dict[str, Any]:
+    """Update an existing QBO Estimate from the current worksheet and write SPH.
+
+    The worksheet's Cost column remains internal to this app. This write updates
+    QBO estimate Product/Service, Description, Qty, Rate, Amount, and the S.P.H
+    custom field. It preserves line-level QBO details such as tax/class refs when
+    those details existed on the latest QBO line.
+    """
+    cleaned_estimate_id = str(estimate_id or "").strip()
+    if not cleaned_estimate_id:
+        raise QboError("This quote is not linked to a QBO Estimate.")
+    if not submitted_lines:
+        raise QboError("No worksheet lines were submitted for upload.")
+
+    latest = await qbo_request(db, "GET", f"/estimate/{cleaned_estimate_id}")
+    estimate = latest.get("Estimate")
+    if not estimate:
+        raise QboError("Could not retrieve latest QBO Estimate before uploading changes.")
+
+    latest_lines = list(estimate.get("Line") or [])
+    latest_by_id = {str(line.get("Id")): line for line in latest_lines if line.get("Id") is not None}
+    submitted_qbo_ids = {str(line.get("qbo_line_id")) for line in submitted_lines if line.get("qbo_line_id")}
+
+    merged_lines: list[dict[str, Any]] = []
+    for submitted_line in submitted_lines:
+        qbo_line_id = str(submitted_line.get("qbo_line_id") or "").strip()
+        existing_line = latest_by_id.get(qbo_line_id) if qbo_line_id else None
+        merged_lines.append(_merge_qbo_estimate_line(existing_line, submitted_line))
+
+    # Preserve unsupported/special lines returned by QBO that the worksheet does
+    # not represent. Normal SalesItemLineDetail and DescriptionOnly lines omitted
+    # from the worksheet are treated as deleted by the app.
+    for existing_line in latest_lines:
+        existing_id = str(existing_line.get("Id")) if existing_line.get("Id") is not None else ""
+        if existing_id in submitted_qbo_ids:
+            continue
+        if existing_line.get("DetailType") not in {"SalesItemLineDetail", "DescriptionOnly"}:
+            merged_lines.append(copy.deepcopy(existing_line))
+
+    custom_fields = _set_sph_custom_field_on_estimate(estimate, sph_value)
+    payload = {
+        "Id": estimate["Id"],
+        "SyncToken": estimate["SyncToken"],
+        "sparse": True,
+        "Line": merged_lines,
         "CustomField": custom_fields,
     }
     return await qbo_request(db, "POST", "/estimate", json_body=payload)

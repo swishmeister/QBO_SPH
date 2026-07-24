@@ -32,6 +32,7 @@ from .qbo_client import (
     qbo_query,
     revoke_qbo_tokens,
     update_qbo_estimate_sph_value,
+    update_qbo_estimate_lines_and_sph,
     update_qbo_item_prices,
 )
 
@@ -344,6 +345,94 @@ def calculate_sph_from_submitted_quote_form(form, quote: Quote) -> dict[str, Dec
         "sph": sph.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
     }
 
+
+
+def submitted_qbo_lines_from_quote_form(db: Session, form, quote: Quote) -> list[dict]:
+    """Build QBO estimate line updates from the current worksheet form.
+
+    Cost is intentionally not sent to QuickBooks because QBO estimate lines do
+    not have this internal-cost column. Cost only affects SPH math in this app.
+    """
+    submitted_lines: list[dict] = []
+    for line in sorted(list(quote.lines), key=lambda x: x.sort_order or 0):
+        prefix = f"line_{line.id}_"
+        has_submitted_line = (prefix + "description") in form or (prefix + "product_service") in form
+        if not has_submitted_line:
+            continue
+
+        product_service = str(form.get(prefix + "product_service") or "").strip()
+        description = str(form.get(prefix + "description") or "").strip()
+        quantity = parse_decimal(form.get(prefix + "quantity"), "0.00")
+        unit_cost = parse_decimal(form.get(prefix + "unit_cost"), "0.00")
+        submitted_rate = parse_decimal(form.get(prefix + "unit_price"), "0.00")
+        submitted_markup_raw = form.get(prefix + "markup_percent")
+        calc_source = str(form.get(prefix + "calc_source") or "").strip()
+
+        numeric_is_empty = quantity == 0 and unit_cost == 0 and submitted_rate == 0 and submitted_markup_raw in (None, "")
+        if product_service == "" and numeric_is_empty:
+            if description:
+                submitted_lines.append(
+                    {
+                        "qbo_line_id": line.qbo_line_id,
+                        "detail_type": "DescriptionOnly",
+                        "description": description,
+                        "sort_order": line.sort_order or 0,
+                    }
+                )
+            continue
+
+        matched = find_item_by_name(db, product_service)
+        qbo_item_id = line.qbo_item_id
+        qbo_item_name = line.qbo_item_name or line.product_service_name or product_service
+        if matched:
+            qbo_item_id = matched.qbo_id
+            qbo_item_name = matched.fully_qualified_name or matched.name
+        elif product_service:
+            current_names = {str(value or "").strip() for value in [line.product_service_name, line.qbo_item_name] if str(value or "").strip()}
+            if qbo_item_id and (not current_names or product_service in current_names):
+                qbo_item_name = product_service
+            elif qbo_item_id and product_service == qbo_item_name:
+                pass
+            else:
+                raise QboError(
+                    f"Product/Service '{product_service}' is not in the local item cache. "
+                    "Refresh the Item Price Manager, choose a Product/Service from the list, then upload again."
+                )
+
+        if not qbo_item_id:
+            raise QboError(f"Line '{description or product_service or line.id}' has no QuickBooks Product/Service selected.")
+
+        labor_item = is_labor_item_name(product_service or line.qbo_item_name or line.product_service_name or description)
+        variable_item = line.is_variable_cost or is_variable_cost_item_name(product_service or line.qbo_item_name or line.product_service_name or description)
+
+        rate = submitted_rate
+        if labor_item:
+            rate = submitted_rate
+        elif variable_item:
+            if calc_source == "markup-input" and submitted_markup_raw not in (None, ""):
+                submitted_markup = parse_decimal(submitted_markup_raw, "0.00")
+                rate = (unit_cost * (Decimal("1.00") + (submitted_markup / Decimal("100.00")))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        elif calc_source in {"cost-input", "markup-input"} and submitted_markup_raw not in (None, ""):
+            submitted_markup = parse_decimal(submitted_markup_raw, "0.00")
+            rate = (unit_cost * (Decimal("1.00") + (submitted_markup / Decimal("100.00")))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+        amount = (quantity * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        submitted_lines.append(
+            {
+                "qbo_line_id": line.qbo_line_id,
+                "detail_type": "SalesItemLineDetail",
+                "description": description,
+                "quantity": quantity,
+                "unit_price": rate,
+                "amount": amount,
+                "qbo_item_id": qbo_item_id,
+                "qbo_item_name": qbo_item_name,
+                "product_service_name": product_service or qbo_item_name,
+                "sort_order": line.sort_order or 0,
+            }
+        )
+
+    return submitted_lines
 
 def find_cached_item(db: Session, qbo_item_id: str | None) -> QboItem | None:
     if not qbo_item_id:
@@ -924,34 +1013,43 @@ def delete_quote_line(quote_id: int, line_id: int, db: Annotated[Session, Depend
 
 
 @app.post("/quotes/{quote_id}/upload-sph")
-async def upload_sph_to_qbo(quote_id: int, request: Request, db: Annotated[Session, Depends(get_db)]):
+async def upload_sph_to_qbo_legacy(quote_id: int, request: Request, db: Annotated[Session, Depends(get_db)]):
+    # Backward-compatible route for old cached pages. It now performs the full upload.
+    return await upload_estimate_to_qbo(quote_id, request, db)
+
+
+@app.post("/quotes/{quote_id}/upload-to-qbo")
+async def upload_estimate_to_qbo(quote_id: int, request: Request, db: Annotated[Session, Depends(get_db)]):
     if settings.qbo_read_only:
-        raise HTTPException(status_code=400, detail="QBO read-only mode is enabled. Disable QBO_READ_ONLY to upload SPH to QuickBooks.")
+        raise HTTPException(status_code=400, detail="QBO read-only mode is enabled. Disable QBO_READ_ONLY to upload to QuickBooks.")
     quote = db.get(Quote, quote_id)
     if quote is None:
         raise HTTPException(status_code=404, detail="Quote not found")
     if not quote.qbo_estimate_id:
-        raise HTTPException(status_code=400, detail="This quote is not linked to a QBO Estimate, so SPH cannot be uploaded.")
+        raise HTTPException(status_code=400, detail="This quote is not linked to a QBO Estimate, so it cannot be uploaded.")
 
     form = await request.form()
     try:
         submitted_totals = calculate_sph_from_submitted_quote_form(form, quote)
-        await update_qbo_estimate_sph_value(db, quote.qbo_estimate_id, submitted_totals["sph"])
+        submitted_lines = submitted_qbo_lines_from_quote_form(db, form, quote)
+        response = await update_qbo_estimate_lines_and_sph(db, quote.qbo_estimate_id, submitted_lines, submitted_totals["sph"])
     except QboError as exc:
-        raise HTTPException(status_code=400, detail=f"Upload SPH failed: {exc}") from exc
+        raise HTTPException(status_code=400, detail=f"Upload to QB failed: {exc}") from exc
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Upload SPH failed: {type(exc).__name__}: {exc}") from exc
+        raise HTTPException(status_code=500, detail=f"Upload to QB failed: {type(exc).__name__}: {exc}") from exc
 
-    # Store only the uploaded SPH timestamp and top-level labor values for reference.
-    # The worksheet lines themselves do not need Save Locally before uploading SPH.
+    estimate = response.get("Estimate")
+    if estimate:
+        quote = upsert_quote_from_qbo_estimate(db, estimate)
+
     quote.sph_uploaded_at = datetime.now(timezone.utc)
     quote.quoted_labor_hours = submitted_totals["quoted_labor_hours"]
     quote.hourly_labor_rate = submitted_totals["hourly_labor_rate"]
     touch_quote(quote)
     db.commit()
-    return RedirectResponse(f"/quotes/{quote.id}?uploaded_sph=1&sph={submitted_totals['sph']}", status_code=303)
+    return RedirectResponse(f"/quotes/{quote.id}?uploaded=1&sph={submitted_totals['sph']}", status_code=303)
 
 
 @app.post("/quotes/{quote_id}/sync-estimate")
@@ -962,7 +1060,7 @@ async def sync_estimate_to_qbo(quote_id: int, db: Annotated[Session, Depends(get
     if quote is None:
         raise HTTPException(status_code=404, detail="Quote not found")
     if quote.qbo_estimate_id:
-        raise HTTPException(status_code=400, detail="This quote is already linked to a QBO Estimate. Use Upload SPH for imported estimates.")
+        raise HTTPException(status_code=400, detail="This quote is already linked to a QBO Estimate. Use Upload to QB for imported estimates.")
     try:
         response = await create_qbo_estimate(db, quote)
     except QboError as exc:

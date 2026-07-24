@@ -92,8 +92,8 @@ QBO_CLIENT_SECRET=<Intuit production client secret>
 QBO_REDIRECT_URI=https://sph.delightfulgardens.com/qbo/callback
 QBO_READ_ONLY=true
 
-QBO_CF_SPH_ID=<SPH custom field DefinitionId>
-QBO_CF_SPH_NAME=SPH
+QBO_CF_SPH_ID=
+QBO_CF_SPH_NAME=S.P.H
 VARIABLE_COST_ITEM_CODES=MC,MI,MP,MM
 
 REQUIRE_BASIC_AUTH=true
@@ -112,7 +112,7 @@ PYTHON_VERSION=3.12.8
 - Do not commit `.env`, database URLs, Intuit client secrets, or Render secrets to GitHub.
 - `APP_SECRET_KEY` is used for session signing and token encryption-at-rest. Once production QBO is connected, changing `APP_SECRET_KEY` will make encrypted stored tokens unreadable and require reconnecting QuickBooks.
 - This build defaults to `QBO_READ_ONLY=true`. That means importing, editing locally, and calculating work; QBO uploads are blocked.
-- Set `QBO_READ_ONLY=false` only after production import testing is complete.
+- Set `QBO_READ_ONLY=false` only after production import testing is complete. The main estimate action is **Upload to QB**, which updates QBO estimate line Product/Service, Description, Qty, Rate/Amount, and the S.P.H custom field. The app Cost column remains internal and is not written to QBO estimate lines.
 
 ## Production deployment steps
 
@@ -143,3 +143,30 @@ For local development, set `SECURE_COOKIES=false` and use sandbox credentials.
 ### Labor item rule
 
 Labor service codes are detected by the `LABOR_ITEM_PREFIXES` setting. The default is `LC:` so items like `LC:MA Labor maintenance` and `LC:PL Planting` are treated as labor. On import, their quantity is counted as quoted labor hours and their rate is used as the hourly labor rate. Labor line cost is set equal to rate so labor contributes to quoted hours/rate but does not inflate gross item markup.
+
+### SPH custom field safety
+
+Set the SPH custom field by name, not by a guessed DefinitionId:
+
+```env
+QBO_CF_SPH_NAME=S.P.H
+QBO_CF_SPH_ID=
+```
+
+The SPH uploader now matches the custom field by name first and will stop with a detailed error instead of writing to another field when the DefinitionId is stale or wrong.
+
+
+### Upload to QB
+
+The estimate screen button is now **Upload to QB**. It pushes the current worksheet to the linked QuickBooks estimate.
+
+It updates these QuickBooks estimate fields:
+
+- Product/Service
+- Description
+- Qty
+- Rate
+- Amount
+- `S.P.H` custom field
+
+It does **not** write the app's Cost column to QuickBooks estimate lines. Cost is internal to the SPH worksheet and is used only to calculate gross markup and SPH. Existing QBO line details such as tax/class refs are preserved when they exist on the latest QuickBooks line.
