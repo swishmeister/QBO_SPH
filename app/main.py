@@ -349,6 +349,133 @@ def calculate_sph_from_submitted_quote_form(db: Session, form, quote: Quote) -> 
 
 
 
+def _line_qbo_product_from_form(db: Session, form, line: QuoteLine, prefix: str, product_service: str, description: str) -> tuple[QboItem | None, str | None, str | None]:
+    """Resolve a submitted worksheet row to a QBO item when the row is an item row.
+
+    Description-only and blank separator rows do not need a Product/Service. Sales
+    item rows do. Existing imported rows may safely reuse their current QBO item ID
+    even when the local item cache is missing or stale.
+    """
+    submitted_item_id = str(form.get(prefix + "qbo_item_id") or "").strip()
+    submitted_item_name = str(form.get(prefix + "qbo_item_name") or "").strip()
+    matched = find_cached_item(db, submitted_item_id) or find_item_by_name(db, product_service)
+    qbo_item_id = line.qbo_item_id
+    qbo_item_name = line.qbo_item_name or line.product_service_name or product_service
+
+    if matched:
+        qbo_item_id = matched.qbo_id
+        qbo_item_name = matched.fully_qualified_name or matched.name
+    elif submitted_item_id and qbo_item_id and submitted_item_id == str(qbo_item_id):
+        # The row came from QBO or a prior cache selection. Let the upload use the
+        # existing QBO item ID rather than blocking variable-cost placeholder rows.
+        qbo_item_name = submitted_item_name or product_service or qbo_item_name
+    elif submitted_item_id:
+        raise QboError(
+            f"Product/Service '{submitted_item_name or product_service or submitted_item_id}' is not in the local item cache. "
+            "Refresh the Item Price Manager, choose the Product/Service again, then upload again."
+        )
+    elif product_service:
+        current_names = {str(value or "").strip() for value in [line.product_service_name, line.qbo_item_name] if str(value or "").strip()}
+        if qbo_item_id and (not current_names or product_service in current_names):
+            qbo_item_name = product_service
+        elif qbo_item_id and product_service == qbo_item_name:
+            pass
+        else:
+            raise QboError(
+                f"Product/Service '{product_service}' is not in the local item cache. "
+                "Refresh the Item Price Manager, choose a Product/Service from the list, then upload again."
+            )
+
+    return matched, qbo_item_id, qbo_item_name
+
+
+def _rate_from_submitted_line(
+    *,
+    unit_cost: Decimal,
+    submitted_rate: Decimal,
+    submitted_markup_raw,
+    calc_source: str,
+    labor_item: bool,
+    variable_item: bool,
+) -> Decimal:
+    rate = submitted_rate
+    if labor_item:
+        return submitted_rate
+    if variable_item:
+        # Variable-cost placeholder rows keep the QBO estimate sale rate when the
+        # Cost cell is updated. Only a direct Markup edit recalculates Rate.
+        if calc_source == "markup-input" and submitted_markup_raw not in (None, ""):
+            submitted_markup = parse_decimal(submitted_markup_raw, "0.00")
+            rate = (unit_cost * (Decimal("1.00") + (submitted_markup / Decimal("100.00")))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    elif calc_source in {"cost-input", "markup-input"} and submitted_markup_raw not in (None, ""):
+        submitted_markup = parse_decimal(submitted_markup_raw, "0.00")
+        rate = (unit_cost * (Decimal("1.00") + (submitted_markup / Decimal("100.00")))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return rate
+
+
+def apply_submitted_quote_form_to_local_lines(db: Session, form, quote: Quote) -> None:
+    """Persist the worksheet's internal app-only values before a QBO upload.
+
+    This is especially important for MC/MI/MP/MM rows: their Cost value is not
+    sent to QuickBooks, but it must remain in this app after Upload to QB so the
+    row can become unflagged once the designer enters the real purchase cost.
+    """
+    for line in sorted(list(quote.lines), key=lambda x: x.sort_order or 0):
+        prefix = f"line_{line.id}_"
+        has_submitted_line = (prefix + "description") in form or (prefix + "product_service") in form
+        if not has_submitted_line:
+            continue
+
+        product_service = str(form.get(prefix + "product_service") or "").strip()
+        description = str(form.get(prefix + "description") or "").strip()
+        quantity = parse_decimal(form.get(prefix + "quantity"), "0.00")
+        unit_cost = parse_decimal(form.get(prefix + "unit_cost"), "0.00")
+        submitted_rate = parse_decimal(form.get(prefix + "unit_price"), "0.00")
+        submitted_markup_raw = form.get(prefix + "markup_percent")
+        calc_source = str(form.get(prefix + "calc_source") or "").strip()
+        numeric_is_empty = quantity == 0 and unit_cost == 0 and submitted_rate == 0 and submitted_markup_raw in (None, "")
+
+        if product_service == "" and numeric_is_empty:
+            line.line_type = "Header"
+            line.description = description
+            line.qbo_item_id = None
+            line.qbo_item_name = None
+            line.product_service_name = ""
+            line.quantity = Decimal("0.00")
+            line.unit_cost = Decimal("0.00")
+            line.unit_price = Decimal("0.00")
+            line.labor_hours = Decimal("0.00")
+            line.include_on_qbo_estimate = True
+            line.is_section_header = True
+            line.is_variable_cost = False
+            continue
+
+        matched, qbo_item_id, qbo_item_name = _line_qbo_product_from_form(db, form, line, prefix, product_service, description)
+        labor_item = item_is_labor(matched, product_service or line.qbo_item_name or line.product_service_name or description)
+        variable_item = item_is_variable(matched, product_service or line.qbo_item_name or line.product_service_name or description) or line.is_variable_cost
+        rate = _rate_from_submitted_line(
+            unit_cost=unit_cost,
+            submitted_rate=submitted_rate,
+            submitted_markup_raw=submitted_markup_raw,
+            calc_source=calc_source,
+            labor_item=labor_item,
+            variable_item=variable_item,
+        )
+
+        line.line_type = "Labor" if labor_item else ("Variable Cost" if variable_item else "Imported")
+        line.description = description
+        line.qbo_item_id = qbo_item_id
+        line.qbo_item_name = qbo_item_name
+        line.product_service_name = product_service or qbo_item_name or ""
+        line.quantity = quantity
+        line.unit_cost = unit_cost
+        line.unit_price = rate
+        line.labor_hours = quantity if labor_item else Decimal("0.00")
+        line.include_on_qbo_estimate = True
+        line.is_section_header = False
+        line.is_variable_cost = variable_item
+
+
 def submitted_qbo_lines_from_quote_form(db: Session, form, quote: Quote) -> list[dict]:
     """Build QBO estimate line updates from the current worksheet form.
 
@@ -372,58 +499,32 @@ def submitted_qbo_lines_from_quote_form(db: Session, form, quote: Quote) -> list
 
         numeric_is_empty = quantity == 0 and unit_cost == 0 and submitted_rate == 0 and submitted_markup_raw in (None, "")
         if product_service == "" and numeric_is_empty:
-            if description:
-                submitted_lines.append(
-                    {
-                        "qbo_line_id": line.qbo_line_id,
-                        "detail_type": "DescriptionOnly",
-                        "description": description,
-                        "sort_order": line.sort_order or 0,
-                    }
-                )
+            # Upload blank separator rows and description-only rows to QBO.
+            submitted_lines.append(
+                {
+                    "qbo_line_id": line.qbo_line_id,
+                    "detail_type": "DescriptionOnly",
+                    "description": description or " ",
+                    "sort_order": line.sort_order or 0,
+                }
+            )
             continue
 
-        submitted_item_id = str(form.get(prefix + "qbo_item_id") or "").strip()
-        submitted_item_name = str(form.get(prefix + "qbo_item_name") or "").strip()
-        matched = find_cached_item(db, submitted_item_id) or find_item_by_name(db, product_service)
-        qbo_item_id = line.qbo_item_id
-        qbo_item_name = line.qbo_item_name or line.product_service_name or product_service
-        if matched:
-            qbo_item_id = matched.qbo_id
-            qbo_item_name = matched.fully_qualified_name or matched.name
-        elif submitted_item_id:
-            raise QboError(
-                f"Product/Service '{submitted_item_name or product_service or submitted_item_id}' is not in the local item cache. "
-                "Refresh the Item Price Manager, choose the Product/Service again, then upload again."
-            )
-        elif product_service:
-            current_names = {str(value or "").strip() for value in [line.product_service_name, line.qbo_item_name] if str(value or "").strip()}
-            if qbo_item_id and (not current_names or product_service in current_names):
-                qbo_item_name = product_service
-            elif qbo_item_id and product_service == qbo_item_name:
-                pass
-            else:
-                raise QboError(
-                    f"Product/Service '{product_service}' is not in the local item cache. "
-                    "Refresh the Item Price Manager, choose a Product/Service from the list, then upload again."
-                )
+        matched, qbo_item_id, qbo_item_name = _line_qbo_product_from_form(db, form, line, prefix, product_service, description)
 
         if not qbo_item_id:
             raise QboError(f"Line '{description or product_service or line.id}' has no QuickBooks Product/Service selected.")
 
         labor_item = item_is_labor(matched, product_service or line.qbo_item_name or line.product_service_name or description)
         variable_item = item_is_variable(matched, product_service or line.qbo_item_name or line.product_service_name or description) or line.is_variable_cost
-
-        rate = submitted_rate
-        if labor_item:
-            rate = submitted_rate
-        elif variable_item:
-            if calc_source == "markup-input" and submitted_markup_raw not in (None, ""):
-                submitted_markup = parse_decimal(submitted_markup_raw, "0.00")
-                rate = (unit_cost * (Decimal("1.00") + (submitted_markup / Decimal("100.00")))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        elif calc_source in {"cost-input", "markup-input"} and submitted_markup_raw not in (None, ""):
-            submitted_markup = parse_decimal(submitted_markup_raw, "0.00")
-            rate = (unit_cost * (Decimal("1.00") + (submitted_markup / Decimal("100.00")))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        rate = _rate_from_submitted_line(
+            unit_cost=unit_cost,
+            submitted_rate=submitted_rate,
+            submitted_markup_raw=submitted_markup_raw,
+            calc_source=calc_source,
+            labor_item=labor_item,
+            variable_item=variable_item,
+        )
 
         amount = (quantity * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         submitted_lines.append(
@@ -1057,6 +1158,9 @@ async def upload_estimate_to_qbo(quote_id: int, request: Request, db: Annotated[
 
     form = await request.form()
     try:
+        # Persist app-only worksheet values such as variable-cost Cost before
+        # QBO returns the refreshed estimate lines. Cost is not sent to QBO.
+        apply_submitted_quote_form_to_local_lines(db, form, quote)
         submitted_totals = calculate_sph_from_submitted_quote_form(db, form, quote)
         submitted_lines = submitted_qbo_lines_from_quote_form(db, form, quote)
         response = await update_qbo_estimate_lines_and_sph(db, quote.qbo_estimate_id, submitted_lines, submitted_totals["sph"])

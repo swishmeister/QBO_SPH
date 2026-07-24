@@ -59,13 +59,14 @@
             </thead>
             <tbody>
             {% for line in quote.lines|sort(attribute='sort_order') %}
-                <tr id="line-{{ line.id }}" class="sheet-row {% if line.is_section_header %}section-row{% endif %} {% if line.is_variable_cost %}variable-cost-row{% endif %} {% if line.line_type == 'Labor' %}labor-row{% endif %}" data-line-id="{{ line.id }}" data-variable-cost="{{ '1' if line.is_variable_cost else '0' }}">
+                {% set variable_needs_cost = line.is_variable_cost and (not line.unit_cost or line.unit_cost == 0 or line.unit_cost == line.unit_price) %}
+                <tr id="line-{{ line.id }}" class="sheet-row {% if line.is_section_header %}section-row{% endif %} {% if variable_needs_cost %}variable-cost-row{% elif line.is_variable_cost %}variable-cost-resolved{% endif %} {% if line.line_type == 'Labor' %}labor-row{% endif %}" data-line-id="{{ line.id }}" data-variable-cost="{{ '1' if line.is_variable_cost else '0' }}" data-variable-needs-cost="{{ '1' if variable_needs_cost else '0' }}">
                     <td data-label="Product/Service">
                         <input class="line-calc-source" type="hidden" name="line_{{ line.id }}_calc_source" value="">
                         <input class="line-qbo-item-id" type="hidden" name="line_{{ line.id }}_qbo_item_id" value="{{ line.qbo_item_id or '' }}">
                         <input class="line-qbo-item-name" type="hidden" name="line_{{ line.id }}_qbo_item_name" value="{{ line.qbo_item_name or line.product_service_name or '' }}">
                         <input class="cell-input product-input" name="line_{{ line.id }}_product_service" list="qbo-item-list" value="{{ line.product_service_name or line.qbo_item_name or '' }}" placeholder="Product/Service" autocomplete="off">
-                        <span class="item-tags">{% if line.is_variable_cost %}<span class="mini-tag variable-tag">Variable cost</span><small class="variable-hint">Add purchase price to Cost column.</small>{% endif %}{% if line.line_type == 'Labor' %}<span class="mini-tag labor-tag">Labor</span>{% endif %}</span>
+                        <span class="item-tags">{% if variable_needs_cost %}<span class="mini-tag variable-tag">Variable cost</span><small class="variable-hint">Add purchase price to Cost column.</small>{% endif %}{% if line.line_type == 'Labor' %}<span class="mini-tag labor-tag">Labor</span>{% endif %}</span>
                     </td>
                     <td data-label="Description"><input class="cell-input description-input" name="line_{{ line.id }}_description" value="{{ line.description }}" placeholder="Description"></td>
                     <td data-label="Qty"><input class="cell-input num qty-input" name="line_{{ line.id }}_quantity" type="number" step="0.01" value="{{ line.quantity if not line.is_section_header else '' }}"></td>
@@ -122,17 +123,24 @@
         const cleaned = String(value || '').trim().toUpperCase();
         return cleaned ? qboItemByName.get(cleaned) : null;
     }
-    function syncRowTags(row, item) {
+    function setVariableCostAttention(row, isVariableCost, needsCost, isLabor) {
+        row.dataset.variableCost = isVariableCost ? '1' : '0';
+        row.dataset.variableNeedsCost = (isVariableCost && needsCost) ? '1' : '0';
+        row.classList.toggle('variable-cost-row', !!(isVariableCost && needsCost));
+        row.classList.toggle('variable-cost-resolved', !!(isVariableCost && !needsCost));
         const tagBox = row.querySelector('.item-tags');
         if (!tagBox) return;
         const tags = [];
-        if (item?.variable_cost) {
+        if (isVariableCost && needsCost) {
             tags.push('<span class="mini-tag variable-tag">Variable cost</span><small class="variable-hint">Add purchase price to Cost column.</small>');
         }
-        if (item?.labor) {
+        if (isLabor) {
             tags.push('<span class="mini-tag labor-tag">Labor</span>');
         }
         tagBox.innerHTML = tags.join('');
+    }
+    function syncRowTags(row, item, needsCost) {
+        setVariableCostAttention(row, !!item?.variable_cost, needsCost ?? !!item?.variable_cost, !!item?.labor);
     }
     function applySelectedItemToRow(row, productValue) {
         const item = lookupItem(productValue);
@@ -164,7 +172,7 @@
         row.dataset.variableCost = item.variable_cost ? '1' : '0';
         row.classList.toggle('variable-cost-row', !!item.variable_cost);
         row.classList.toggle('labor-row', !!item.labor);
-        syncRowTags(row, item);
+        syncRowTags(row, item, !!item.variable_cost);
         return true;
     }
     function isVariableCodeName(value) {
@@ -219,6 +227,8 @@
             markup = cost === 0 ? 0 : ((rate - cost) / cost) * 100;
             markupEl.value = cost === 0 ? '' : markup.toFixed(2);
         }
+        const needsVariableCost = isVariableCost && (cost <= 0 || Math.abs(cost - rate) < 0.005);
+        setVariableCostAttention(row, isVariableCost, needsVariableCost, isLabor);
         const revenue = qty * rate;
         const totalCost = qty * cost;
         amountEl.textContent = money(revenue);
