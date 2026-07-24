@@ -302,25 +302,63 @@ async def create_qbo_estimate(db: Session, quote: Quote) -> dict[str, Any]:
     return await qbo_request(db, "POST", "/estimate", json_body=build_estimate_payload(quote))
 
 
-async def update_qbo_estimate_sph(db: Session, quote: Quote) -> dict[str, Any]:
-    if not quote.qbo_estimate_id:
+async def update_qbo_estimate_sph_value(db: Session, estimate_id: str, sph_value: Decimal | str | float) -> dict[str, Any]:
+    """Update only the configured SPH custom field on an existing QBO Estimate.
+
+    This intentionally does not depend on locally saved quote lines. The caller
+    should pass the SPH value calculated from the current submitted worksheet.
+    """
+    cleaned_estimate_id = str(estimate_id or "").strip()
+    if not cleaned_estimate_id:
         raise QboError("This quote is not linked to a QBO Estimate.")
-    latest = await qbo_request(db, "GET", f"/estimate/{quote.qbo_estimate_id}")
+
+    latest = await qbo_request(db, "GET", f"/estimate/{cleaned_estimate_id}")
     estimate = latest.get("Estimate")
     if not estimate:
         raise QboError("Could not retrieve latest QBO Estimate before updating SPH.")
-    totals = quote_totals(quote)
-    custom_fields = estimate.get("CustomField") or []
+
+    try:
+        sph_decimal = Decimal(str(sph_value or "0")).quantize(Decimal("0.01"))
+    except Exception as exc:
+        raise QboError(f"Calculated SPH value is invalid: {sph_value}") from exc
+
+    sph_string = f"{sph_decimal}"
+    custom_fields = list(estimate.get("CustomField") or [])
     sph_written = False
+    configured_id = str(settings.qbo_cf_sph_id or "").strip()
+    configured_name = settings.qbo_cf_sph_name.strip().lower()
+
     for field in custom_fields:
-        if str(field.get("DefinitionId")) == str(settings.qbo_cf_sph_id) or (field.get("Name") or "").strip().lower() == settings.qbo_cf_sph_name.strip().lower():
+        field_id_matches = configured_id and str(field.get("DefinitionId")) == configured_id
+        field_name_matches = configured_name and (field.get("Name") or "").strip().lower() == configured_name
+        if field_id_matches or field_name_matches:
             field["Type"] = "StringType"
-            field["StringValue"] = f"{totals['sph']}"
+            field["StringValue"] = sph_string
             sph_written = True
+
     if not sph_written:
-        custom_fields.append({"DefinitionId": settings.qbo_cf_sph_id, "Name": settings.qbo_cf_sph_name, "Type": "StringType", "StringValue": f"{totals['sph']}"})
-    payload = {"Id": estimate["Id"], "SyncToken": estimate["SyncToken"], "sparse": True, "CustomField": custom_fields}
+        custom_fields.append({
+            "DefinitionId": settings.qbo_cf_sph_id,
+            "Name": settings.qbo_cf_sph_name,
+            "Type": "StringType",
+            "StringValue": sph_string,
+        })
+
+    payload = {
+        "Id": estimate["Id"],
+        "SyncToken": estimate["SyncToken"],
+        "sparse": True,
+        "CustomField": custom_fields,
+    }
     return await qbo_request(db, "POST", "/estimate", json_body=payload)
+
+
+async def update_qbo_estimate_sph(db: Session, quote: Quote) -> dict[str, Any]:
+    """Backward-compatible wrapper using the currently saved local quote totals."""
+    if not quote.qbo_estimate_id:
+        raise QboError("This quote is not linked to a QBO Estimate.")
+    totals = quote_totals(quote)
+    return await update_qbo_estimate_sph_value(db, quote.qbo_estimate_id, totals["sph"])
 
 
 async def update_qbo_item_prices(db: Session, item: QboItem) -> dict[str, Any]:

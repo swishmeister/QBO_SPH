@@ -11,11 +11,10 @@
     </div>
 </section>
 
-{% if request.query_params.get('saved') %}<div class="notice success">Saved locally.</div>{% endif %}
 {% if request.query_params.get('refreshed') %}<div class="notice success">Estimate refreshed from QuickBooks.</div>{% endif %}
 {% if request.query_params.get('uploaded_sph') %}<div class="notice success">SPH uploaded to QuickBooks.</div>{% endif %}
 
-<form id="quote-sheet-form" method="post" action="/quotes/{{ quote.id }}/save">
+<form id="quote-sheet-form" method="post" action="/quotes/{{ quote.id }}/upload-sph">
 <section class="sph-bar card">
     <div class="sph-input">
         <label>Quoted Labor Hours</label>
@@ -38,7 +37,9 @@
             <p class="subtle">Edit cells directly. SPH updates from gross markup: (Rate - Cost) × Qty.</p>
         </div>
         <div class="actions">
-            <button id="save-locally-button" class="button primary" type="submit" form="quote-sheet-form">Save Locally</button>
+            {% if quote.qbo_estimate_id %}
+            <button id="upload-sph-toolbar-button" class="button primary" type="submit" form="quote-sheet-form" {% if qbo.read_only %}disabled title="QBO_READ_ONLY is enabled"{% endif %}>Upload SPH to QBO</button>
+            {% endif %}
         </div>
     </div>
     <div class="table-scroll sheet-scroll">
@@ -59,6 +60,7 @@
             {% for line in quote.lines|sort(attribute='sort_order') %}
                 <tr id="line-{{ line.id }}" class="sheet-row {% if line.is_section_header %}section-row{% endif %} {% if line.is_variable_cost %}variable-cost-row{% endif %} {% if line.line_type == 'Labor' %}labor-row{% endif %}" data-line-id="{{ line.id }}">
                     <td data-label="Product/Service">
+                        <input class="line-calc-source" type="hidden" name="line_{{ line.id }}_calc_source" value="">
                         <input class="cell-input product-input" name="line_{{ line.id }}_product_service" list="qbo-item-list" value="{{ line.product_service_name or line.qbo_item_name or '' }}" placeholder="Product/Service">
                         {% if line.is_variable_cost %}<span class="mini-tag">Variable cost</span>{% endif %}{% if line.line_type == 'Labor' %}<span class="mini-tag labor-tag">Labor</span>{% endif %}
                     </td>
@@ -94,7 +96,7 @@
 <section class="card action-card">
     <div class="actions left">
         <form method="post" action="/quotes/{{ quote.id }}/lines"><button class="button" type="submit">Add Item Row</button></form>
-        {% if quote.qbo_estimate_id %}<form method="post" action="/quotes/{{ quote.id }}/upload-sph"><button class="button primary" type="submit" {% if qbo.read_only %}disabled title="QBO_READ_ONLY is enabled"{% endif %}>Upload SPH to QBO</button></form>{% endif %}
+        {% if quote.qbo_estimate_id %}<button class="button primary" type="submit" form="quote-sheet-form" {% if qbo.read_only %}disabled title="QBO_READ_ONLY is enabled"{% endif %}>Upload SPH to QBO</button>{% endif %}
     </div>
     <p class="subtle">Variable-cost items such as MC, MI, and MP ignore the QBO item-list default price on import. Enter their line-specific vendor cost here.</p>
 </section>
@@ -161,14 +163,29 @@
     }
     document.addEventListener('input', function(e){
         if (e.target.matches('.qty-input,.cost-input,.markup-input,.rate-input,.product-input,#quoted-labor-hours,#hourly-labor-rate')) {
-            updateTotals(e.target.classList.contains('cost-input') ? 'cost-input' : e.target.classList.contains('markup-input') ? 'markup-input' : e.target.classList.contains('rate-input') ? 'rate-input' : '');
+            const source = e.target.classList.contains('cost-input') ? 'cost-input' : e.target.classList.contains('markup-input') ? 'markup-input' : e.target.classList.contains('rate-input') ? 'rate-input' : '';
+            const row = e.target.closest('tr.sheet-row');
+            if (row) {
+                const sourceInput = row.querySelector('.line-calc-source');
+                if (sourceInput && source) sourceInput.value = source;
+            }
+            updateTotals(source);
         }
     });
     const form = document.getElementById('quote-sheet-form');
     if (form) {
         form.addEventListener('submit', function(){
+            // The upload route recalculates SPH server-side from the submitted
+            // worksheet. This final client-side pass keeps the visible numbers
+            // aligned with the values being submitted.
             const active = document.activeElement;
-            updateTotals(active?.classList?.contains('markup-input') ? 'markup-input' : active?.classList?.contains('cost-input') ? 'cost-input' : active?.classList?.contains('rate-input') ? 'rate-input' : '');
+            const activeSource = active?.classList?.contains('markup-input') ? 'markup-input' : active?.classList?.contains('cost-input') ? 'cost-input' : active?.classList?.contains('rate-input') ? 'rate-input' : '';
+            if (activeSource) {
+                const row = active.closest('tr.sheet-row');
+                const sourceInput = row?.querySelector('.line-calc-source');
+                if (sourceInput) sourceInput.value = activeSource;
+            }
+            updateTotals(activeSource);
         });
     }
     updateTotals('');
