@@ -1104,14 +1104,40 @@ async def save_quote_sheet(quote_id: int, request: Request, db: Annotated[Sessio
 
 
 @app.post("/quotes/{quote_id}/lines")
-def add_quote_line(quote_id: int, db: Annotated[Session, Depends(get_db)]):
+async def add_quote_line(quote_id: int, request: Request, db: Annotated[Session, Depends(get_db)]):
     quote = db.get(Quote, quote_id)
     if quote is None:
         raise HTTPException(status_code=404, detail="Quote not found")
-    line = QuoteLine(quote_id=quote.id, line_type="Imported", description="", quantity=Decimal("1.00"), unit_cost=Decimal("0.00"), unit_price=Decimal("0.00"), sort_order=len(quote.lines) + 1)
-    db.add(line)
-    touch_quote(quote)
-    db.commit()
+
+    form = await request.form()
+    try:
+        # Add Item Row is not a QBO upload, but it should preserve any worksheet
+        # edits that are currently on screen. Without this, selecting MC/MI/MP/MM
+        # or entering costs can appear to be deleted after the page reloads.
+        if form:
+            apply_submitted_quote_form_to_local_lines(db, form, quote)
+
+        next_sort = (max((line.sort_order or 0 for line in quote.lines), default=0) + 1)
+        line = QuoteLine(
+            quote_id=quote.id,
+            line_type="Imported",
+            description="",
+            quantity=Decimal("1.00"),
+            unit_cost=Decimal("0.00"),
+            unit_price=Decimal("0.00"),
+            sort_order=next_sort,
+            include_on_qbo_estimate=True,
+        )
+        db.add(line)
+        touch_quote(quote)
+        db.commit()
+    except QboError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"Add Item Row failed: {exc}") from exc
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Add Item Row failed: {type(exc).__name__}: {exc}") from exc
+
     return RedirectResponse(f"/quotes/{quote.id}#line-{line.id}", status_code=303)
 
 
@@ -1127,16 +1153,36 @@ def add_header_line(quote_id: int, db: Annotated[Session, Depends(get_db)]):
 
 
 @app.post("/quotes/{quote_id}/lines/{line_id}/delete")
-def delete_quote_line(quote_id: int, line_id: int, db: Annotated[Session, Depends(get_db)]):
+async def delete_quote_line(quote_id: int, line_id: int, request: Request, db: Annotated[Session, Depends(get_db)]):
     quote = db.get(Quote, quote_id)
     if quote is None:
         raise HTTPException(status_code=404, detail="Quote not found")
     line = db.get(QuoteLine, line_id)
     if line is None or line.quote_id != quote.id:
         raise HTTPException(status_code=404, detail="Line not found")
-    db.delete(line)
-    touch_quote(quote)
-    db.commit()
+
+    form = await request.form()
+    try:
+        # Preserve other on-screen worksheet edits before deleting the requested row.
+        if form:
+            apply_submitted_quote_form_to_local_lines(db, form, quote)
+            line = db.get(QuoteLine, line_id)
+            if line is None or line.quote_id != quote.id:
+                raise HTTPException(status_code=404, detail="Line not found")
+
+        db.delete(line)
+        touch_quote(quote)
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except QboError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"Delete Row failed: {exc}") from exc
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Delete Row failed: {type(exc).__name__}: {exc}") from exc
+
     return RedirectResponse(f"/quotes/{quote.id}", status_code=303)
 
 
