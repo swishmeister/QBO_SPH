@@ -47,7 +47,7 @@ The SPH summary at the top of each estimate updates live in the browser as works
 
 ### Variable-cost material-code handling
 
-Generic non-inventory material codes such as `MC`, `MI`, and `MP` are treated as variable-cost placeholders.
+Generic non-inventory material codes such as `MC`, `MI`, `MP`, and `MM` are treated as variable-cost placeholders.
 
 Rules:
 
@@ -59,7 +59,7 @@ Rules:
 Configure the code list with:
 
 ```env
-VARIABLE_COST_ITEM_CODES=MC,MI,MP
+VARIABLE_COST_ITEM_CODES=MC,MI,MP,MM
 ```
 
 ### Upload SPH to QBO
@@ -93,7 +93,7 @@ QBO_READ_ONLY=true
 
 QBO_CF_SPH_ID=<SPH custom field DefinitionId>
 QBO_CF_SPH_NAME=SPH
-VARIABLE_COST_ITEM_CODES=MC,MI,MP
+VARIABLE_COST_ITEM_CODES=MC,MI,MP,MM
 
 REQUIRE_BASIC_AUTH=true
 APP_USERNAME=<admin username>

@@ -28,7 +28,7 @@ class Settings(BaseModel):
     qbo_cf_profit_per_hour_id: str = os.getenv("QBO_CF_PROFIT_PER_HOUR_ID", "3")
     qbo_cf_sph_id: str = os.getenv("QBO_CF_SPH_ID", os.getenv("QBO_CF_PROFIT_PER_HOUR_ID", "3"))
     qbo_cf_sph_name: str = os.getenv("QBO_CF_SPH_NAME", "SPH")
-    variable_cost_item_codes: list[str] = _env_list("VARIABLE_COST_ITEM_CODES", "MC,MI,MP")
+    variable_cost_item_codes: list[str] = _env_list("VARIABLE_COST_ITEM_CODES", "MC,MI,MP,MM")
     labor_item_prefixes: list[str] = _env_list("LABOR_ITEM_PREFIXES", "LC:")
     default_estimate_refresh_days: int = int(os.getenv("DEFAULT_ESTIMATE_REFRESH_DAYS", "30"))
     app_username: str = os.getenv("APP_USERNAME", "")

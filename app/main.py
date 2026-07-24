@@ -210,7 +210,7 @@ def _settings_list(attr_name: str, default: list[str]) -> list[str]:
 def is_variable_cost_item_name(name: str | None) -> bool:
     if not name:
         return False
-    variable_codes = set(_settings_list("variable_cost_item_codes", ["MC", "MI", "MP"]))
+    variable_codes = set(_settings_list("variable_cost_item_codes", ["MC", "MI", "MP", "MM"]))
     final_segment = name.split(":")[-1].strip().upper()
     first_token = final_segment.split()[0].strip().upper() if final_segment.split() else final_segment
     return final_segment in variable_codes or first_token in variable_codes
