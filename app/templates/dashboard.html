@@ -2,77 +2,62 @@
 {% block content %}
 <section class="card hero">
     <div>
-        <h1>Quote margin dashboard</h1>
-        <p>Build internal quotes with cost, price, estimated labor hours, gross margin, and profit per hour before creating the customer-facing QBO Estimate.</p>
+        <h1>SPH and pricing dashboard</h1>
+        <p>Import estimates, calculate SPH from gross markup, and manage QBO item purchase/sale prices.</p>
     </div>
     <div class="actions">
-        <a class="button primary" href="/quotes/new">New Quote</a>
-        <a class="button" href="/qbo/import-estimate">Import Existing QBO Estimate</a>
-        {% if not qbo.connected %}
-            <a class="button" href="/qbo/connect">Connect to QuickBooks</a>
-        {% endif %}
+        <a class="button primary" href="/estimates">Open Estimate Library</a>
+        <a class="button" href="/items">Open Item Price Manager</a>
+        {% if not qbo.connected %}<a class="button" href="/qbo/connect">Connect to QuickBooks</a>{% endif %}
     </div>
+</section>
+
+<section class="metrics wide-metrics">
+    <div class="card metric"><span>Imported estimates</span><strong>{{ quote_count }}</strong></div>
+    <div class="card metric"><span>Imported items</span><strong>{{ item_count }}</strong></div>
+    <div class="card metric"><span>Pending item price changes</span><strong>{{ pending_price_changes }}</strong></div>
+    <div class="card metric"><span>Mode</span><strong>{{ 'Read-only' if qbo.read_only else 'Write enabled' }}</strong></div>
 </section>
 
 <section class="grid two">
     <div class="card">
         <h2>QuickBooks connection</h2>
         {% if qbo.connected %}
-            <p>Connected to QuickBooks company realm <strong>{{ qbo.realm_id }}</strong>.</p>
-            {% if qbo.read_only %}
-                <p><span class="badge warn">Read-only mode</span> QBO estimate creation is disabled.</p>
-            {% endif %}
-            <form method="post" action="/qbo/disconnect">
-                <button class="button danger" type="submit">Disconnect QuickBooks</button>
-            </form>
+            <p>Connected to <strong>{{ qbo.company_name or qbo.realm_id }}</strong>.</p>
+            {% if qbo.read_only %}<p><span class="badge warn">Read-only mode</span> Uploads to QBO are blocked.</p>{% endif %}
+            <form method="post" action="/qbo/disconnect"><button class="button danger" type="submit">Disconnect QuickBooks</button></form>
         {% else %}
-            <p>Connect to a QBO sandbox or production company before syncing estimates.</p>
+            <p>Connect before importing estimates or items.</p>
             <a class="button" href="/qbo/connect">Connect to QuickBooks</a>
         {% endif %}
     </div>
-
     <div class="card">
-        <h2>Cached QBO lists</h2>
-        <p><strong>{{ customer_count }}</strong> customers cached</p>
-        <p><strong>{{ item_count }}</strong> products/services cached</p>
-        <div class="actions left">
-            <form method="post" action="/qbo/cache-customers">
-                <button class="button" type="submit" {% if not qbo.connected %}disabled{% endif %}>Refresh Customers</button>
-            </form>
-            <form method="post" action="/qbo/cache-items">
-                <button class="button" type="submit" {% if not qbo.connected %}disabled{% endif %}>Refresh Items</button>
-            </form>
+        <h2>Quick actions</h2>
+        <div class="actions left stackish">
+            <form method="post" action="/estimates/import-year"><button class="button" type="submit" {% if not qbo.connected %}disabled{% endif %}>Import Estimates From Jan 1</button></form>
+            <form method="post" action="/qbo/cache-items"><button class="button" type="submit" {% if not qbo.connected %}disabled{% endif %}>Import / Refresh Items</button></form>
+            <form method="post" action="/qbo/cache-customers"><button class="button" type="submit" {% if not qbo.connected %}disabled{% endif %}>Refresh Customers</button></form>
         </div>
     </div>
 </section>
 
 <section class="card">
-    <h2>Quotes</h2>
+    <h2>Recent estimates</h2>
     {% if quotes %}
-        <table>
-            <thead>
-                <tr>
-                    <th>Quote</th>
-                    <th>Customer</th>
-                    <th>Status</th>
-                    <th>QBO Estimate</th>
-                    <th></th>
-                </tr>
-            </thead>
+        <table class="compact-table">
+            <thead><tr><th>Estimate #</th><th>Date</th><th>Customer</th><th>Status</th><th></th></tr></thead>
             <tbody>
             {% for quote in quotes %}
                 <tr>
-                    <td>{{ quote.title }}</td>
+                    <td>{{ quote.qbo_estimate_doc_number or quote.title }}</td>
+                    <td>{{ quote.qbo_txn_date or '—' }}</td>
                     <td>{{ quote.customer_name }}</td>
                     <td><span class="badge">{{ quote.status }}</span></td>
-                    <td>{{ quote.qbo_estimate_doc_number or quote.qbo_estimate_id or "—" }}</td>
                     <td><a href="/quotes/{{ quote.id }}">Open</a></td>
                 </tr>
             {% endfor %}
             </tbody>
         </table>
-    {% else %}
-        <p>No quotes yet.</p>
-    {% endif %}
+    {% else %}<p>No estimates imported yet.</p>{% endif %}
 </section>
 {% endblock %}

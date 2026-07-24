@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card hero slim-hero">
+    <div>
+        <h1>Estimate Library</h1>
+        <p>Import current-year estimates, refresh the local library, and search by customer name or estimate number.</p>
+    </div>
+    <div class="actions">
+        <form method="post" action="/estimates/import-year"><button class="button primary" type="submit" {% if not qbo.connected %}disabled{% endif %}>Import From Jan 1</button></form>
+        <form method="post" action="/estimates/refresh"><button class="button" type="submit" {% if not qbo.connected %}disabled{% endif %}>Refresh Library</button></form>
+        <a class="button" href="/qbo/import-estimate">Import Older Estimate #</a>
+    </div>
+</section>
+
+<section class="card">
+    <form class="search-row" method="get" action="/estimates">
+        <input name="search" value="{{ search }}" placeholder="Search by customer name or estimate #">
+        <button class="button" type="submit">Search</button>
+        {% if search %}<a class="button" href="/estimates">Clear</a>{% endif %}
+    </form>
+    <div class="table-scroll">
+        <table class="compact-table library-table">
+            <thead><tr><th>Estimate #</th><th>Date</th><th>Customer</th><th>Status</th><th class="num">QBO Total</th><th class="num">SPH</th><th>Last Synced</th><th></th></tr></thead>
+            <tbody>
+            {% for quote in quotes %}
+                {% set totals = quote.lines and quote_totals(quote) if false else None %}
+                <tr>
+                    <td><strong>{{ quote.qbo_estimate_doc_number or quote.qbo_estimate_id or quote.id }}</strong></td>
+                    <td>{{ quote.qbo_txn_date or '—' }}</td>
+                    <td>{{ quote.customer_name }}</td>
+                    <td><span class="badge">{{ quote.status }}</span></td>
+                    <td class="num">${{ quote.qbo_total_amount }}</td>
+                    <td class="num">{% if quote.quoted_labor_hours and quote.quoted_labor_hours != 0 %}${{ quote_totals(quote).sph }}/hr{% else %}—{% endif %}</td>
+                    <td>{{ quote.last_synced_at.strftime('%Y-%m-%d %H:%M') if quote.last_synced_at else '—' }}</td>
+                    <td><a href="/quotes/{{ quote.id }}">Open</a></td>
+                </tr>
+            {% else %}
+                <tr><td colspan="8">No estimates found. Import current-year estimates or look up an older estimate by number.</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endblock %}

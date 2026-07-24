@@ -6,6 +6,11 @@ import os
 load_dotenv()
 
 
+
+def _env_list(name: str, default: str = "") -> list[str]:
+    raw = os.getenv(name, default) or ""
+    return [item.strip().upper() for item in raw.split(",") if item.strip()]
+
 def _env_bool(name: str, default: str = "false") -> bool:
     return os.getenv(name, default).lower() in {"1", "true", "yes", "on"}
 
@@ -21,6 +26,9 @@ class Settings(BaseModel):
     qbo_cf_margin_id: str = os.getenv("QBO_CF_MARGIN_ID", "1")
     qbo_cf_profit_id: str = os.getenv("QBO_CF_PROFIT_ID", "2")
     qbo_cf_profit_per_hour_id: str = os.getenv("QBO_CF_PROFIT_PER_HOUR_ID", "3")
+    qbo_cf_sph_id: str = os.getenv("QBO_CF_SPH_ID", os.getenv("QBO_CF_PROFIT_PER_HOUR_ID", "3"))
+    qbo_cf_sph_name: str = os.getenv("QBO_CF_SPH_NAME", "SPH")
+    variable_cost_item_codes: list[str] = _env_list("VARIABLE_COST_ITEM_CODES", "MC,MI,MP")
     app_username: str = os.getenv("APP_USERNAME", "")
     app_password: str = os.getenv("APP_PASSWORD", "")
     require_basic_auth: bool = _env_bool("REQUIRE_BASIC_AUTH", "false")

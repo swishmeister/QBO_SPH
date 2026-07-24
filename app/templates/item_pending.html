@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card hero slim-hero">
+    <div>
+        <h1>Pending item price changes</h1>
+        <p>Review changes before sending price updates to QBO. Variable-cost items are excluded.</p>
+    </div>
+    <div class="actions"><a class="button" href="/items">Back to Item Manager</a></div>
+</section>
+
+<section class="card">
+    {% if items %}
+        <div class="table-scroll">
+            <table class="compact-table">
+                <thead><tr><th>Item</th><th class="num">Old Purchase</th><th class="num">New Purchase</th><th class="num">Old Sale</th><th class="num">New Sale</th><th class="num">New Markup %</th></tr></thead>
+                <tbody>
+                {% for item in items %}
+                    <tr>
+                        <td>{{ item.fully_qualified_name or item.name }}</td>
+                        <td class="num">${{ item.original_purchase_cost }}</td>
+                        <td class="num">${{ item.purchase_cost }}</td>
+                        <td class="num">${{ item.original_unit_price }}</td>
+                        <td class="num">${{ item.unit_price }}</td>
+                        <td class="num">{{ item.markup_percent if item.markup_percent is not none else '—' }}%</td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <div class="actions left top-gap">
+            <form method="post" action="/items/upload-changes"><button class="button primary" type="submit" {% if qbo.read_only %}disabled title="QBO_READ_ONLY is enabled"{% endif %}>Upload Price Changes to QBO</button></form>
+            <form method="post" action="/items/revert-changes"><button class="button danger" type="submit">Revert All Local Changes</button></form>
+        </div>
+        {% if qbo.read_only %}<p class="subtle">Read-only mode is enabled, so uploads are blocked.</p>{% endif %}
+    {% else %}
+        <p>No pending item price changes.</p>
+    {% endif %}
+</section>
+{% endblock %}

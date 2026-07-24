@@ -1,26 +1,13 @@
 {% extends "base.html" %}
 {% block content %}
 <section class="card narrow">
-    <h1>Import existing QBO Estimate</h1>
-    <p>Enter the QBO estimate number, such as the estimate's DocNumber, or the internal QBO estimate ID. The app will pull the customer-facing estimate lines, then you can enter cost and labor hours to calculate SPH and profit per hour.</p>
-
-    {% if not qbo.connected %}
-        <p><span class="badge warn">QBO Not Connected</span></p>
-        <a class="button" href="/qbo/connect">Connect to QuickBooks</a>
-    {% else %}
-        <form method="post" action="/qbo/import-estimate" class="form-stack">
-            <label>
-                QBO estimate number or ID
-                <input name="estimate_identifier" required placeholder="Example: 1034">
-            </label>
-
-            <label>
-                Target gross margin %
-                <input name="target_margin_percent" type="number" step="0.01" value="40.00">
-            </label>
-
-            <button class="button primary" type="submit">Import Estimate</button>
-        </form>
-    {% endif %}
+    <h1>Import QBO estimate by number</h1>
+    <p>Use this for older estimates or one-off lookups that are not in the current-year library.</p>
+    <form method="post" action="/qbo/import-estimate" class="form-stack">
+        <label>Estimate # or QBO ID
+            <input name="estimate_identifier" required placeholder="Example: 26158-P">
+        </label>
+        <button class="button primary" type="submit" {% if not qbo.connected %}disabled{% endif %}>Import Estimate</button>
+    </form>
 </section>
 {% endblock %}

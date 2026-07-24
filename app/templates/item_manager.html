@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card hero slim-hero">
+    <div>
+        <h1>Item Price Manager</h1>
+        <p>Edit purchase cost, markup %, and sale price. Quantity is read-only and is not uploaded.</p>
+    </div>
+    <div class="actions">
+        <form method="post" action="/items/import"><button class="button primary" type="submit" {% if not qbo.connected %}disabled{% endif %}>Import / Refresh Items</button></form>
+        <a class="button" href="/items/pending">Review Pending Changes ({{ pending_count }})</a>
+    </div>
+</section>
+
+<section class="card">
+    <form class="search-row" method="get" action="/items">
+        <input name="search" value="{{ search }}" placeholder="Search by item, SKU, or category">
+        <label class="inline-check"><input type="checkbox" name="changed" value="1" {% if changed == '1' %}checked{% endif %}> Changed only</label>
+        <button class="button" type="submit">Search</button>
+        <a class="button" href="/items">Clear</a>
+    </form>
+</section>
+
+<form method="post" action="/items/save" id="item-price-form">
+<section class="card sheet-card">
+    <div class="sheet-toolbar">
+        <div><h2>QBO items</h2><p class="subtle">Variable-cost codes like MC, MI, and MP are locked from bulk price upload.</p></div>
+        <div class="actions"><button class="button primary" type="submit">Save Local Price Changes</button></div>
+    </div>
+    <div class="table-scroll sheet-scroll">
+        <table class="estimate-sheet item-sheet" id="item-sheet">
+            <thead>
+                <tr><th class="col-product">Item</th><th>Type</th><th>SKU</th><th class="num">Purchase Price</th><th class="num">Markup %</th><th class="num">Sale Price</th><th class="num">Qty On Hand</th><th>Active</th><th>Changed</th></tr>
+            </thead>
+            <tbody>
+            {% for item in items %}
+                <tr class="item-row {% if item.variable_cost %}variable-cost-row locked-row{% endif %}" data-item-id="{{ item.id }}">
+                    <td><strong>{{ item.fully_qualified_name or item.name }}</strong>{% if item.variable_cost %}<span class="mini-tag">Variable cost locked</span>{% endif %}</td>
+                    <td>{{ item.item_type or '—' }}</td>
+                    <td>{{ item.sku or '—' }}</td>
+                    <td><input class="cell-input num item-cost" name="item_{{ item.id }}_purchase_cost" type="number" step="0.01" value="{{ item.purchase_cost }}" {% if item.variable_cost %}readonly{% endif %}></td>
+                    <td><input class="cell-input num item-markup" type="number" step="0.01" value="{{ item.markup_percent if item.markup_percent is not none else '' }}" {% if item.variable_cost %}readonly{% endif %}></td>
+                    <td><input class="cell-input num item-price" name="item_{{ item.id }}_unit_price" type="number" step="0.01" value="{{ item.unit_price }}" {% if item.variable_cost %}readonly{% endif %}></td>
+                    <td class="num">{{ item.qty_on_hand if item.qty_on_hand is not none else '—' }}</td>
+                    <td>{{ 'Yes' if item.active else 'No' }}</td>
+                    <td>{% if item.is_changed %}<span class="badge warn">Changed</span>{% else %}<span class="badge good">Synced</span>{% endif %}</td>
+                </tr>
+            {% else %}
+                <tr><td colspan="9">No items imported yet.</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+</form>
+
+<section class="card action-card">
+    <div class="actions left">
+        <a class="button" href="/items/pending">Review Pending Changes</a>
+        <form method="post" action="/items/revert-changes"><button class="button danger" type="submit">Revert Local Price Changes</button></form>
+    </div>
+</section>
+
+<script>
+(function(){
+    const num = v => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
+    function rowChange(row, source) {
+        const cost = row.querySelector('.item-cost');
+        const markup = row.querySelector('.item-markup');
+        const price = row.querySelector('.item-price');
+        if (!cost || cost.readOnly) return;
+        const c = num(cost.value); let m = num(markup.value); let p = num(price.value);
+        if (source === 'markup' || source === 'cost') {
+            p = c * (1 + m / 100);
+            price.value = p.toFixed(2);
+        } else if (source === 'price') {
+            m = c === 0 ? 0 : ((p - c) / c) * 100;
+            markup.value = c === 0 ? '' : m.toFixed(2);
+        }
+    }
+    document.addEventListener('input', function(e){
+        const row = e.target.closest('.item-row');
+        if (!row) return;
+        if (e.target.classList.contains('item-cost')) rowChange(row, 'cost');
+        if (e.target.classList.contains('item-markup')) rowChange(row, 'markup');
+        if (e.target.classList.contains('item-price')) rowChange(row, 'price');
+    });
+})();
+</script>
+{% endblock %}

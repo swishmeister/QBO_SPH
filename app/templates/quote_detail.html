@@ -1,256 +1,155 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="card hero compact-hero">
+<section class="card quote-head">
     <div>
-        <h1>{{ quote.title }}</h1>
-        <p><strong>{{ quote.customer_name }}</strong> · <span class="badge">{{ quote.status }}</span></p>
-        {% if quote.qbo_estimate_id %}
-            <p>Linked QBO Estimate: <strong>{{ quote.qbo_estimate_doc_number or quote.qbo_estimate_id }}</strong></p>
-        {% endif %}
+        <h1>Estimate {{ quote.qbo_estimate_doc_number or quote.id }}</h1>
+        <p><strong>{{ quote.customer_name }}</strong>{% if quote.qbo_txn_date %} · {{ quote.qbo_txn_date }}{% endif %}{% if quote.last_synced_at %} · Last synced {{ quote.last_synced_at.strftime('%Y-%m-%d %H:%M') }}{% endif %}</p>
     </div>
     <div class="actions">
-        <a class="button" href="/">Dashboard</a>
-        <form method="post" action="/quotes/{{ quote.id }}/status">
-            <input type="hidden" name="status" value="Approved Internally">
-            <button class="button" type="submit">Mark Approved</button>
-        </form>
-        <form method="post" action="/quotes/{{ quote.id }}/sync-estimate">
-            <button class="button primary" type="submit" {% if not qbo.connected or quote.qbo_estimate_id %}disabled{% endif %}>Create QBO Estimate</button>
-        </form>
+        {% if quote.qbo_estimate_id %}<form method="post" action="/quotes/{{ quote.id }}/refresh-from-qbo"><button class="button" type="submit">Refresh From QBO</button></form>{% endif %}
+        <a class="button" href="/estimates">Back to Library</a>
     </div>
 </section>
 
-<section class="metrics compact-metrics">
-    <div class="metric card">
-        <span>Revenue</span>
-        <strong>${{ totals.revenue }}</strong>
+<form id="quote-sheet-form" method="post" action="/quotes/{{ quote.id }}/save">
+<section class="sph-bar card">
+    <div class="sph-input">
+        <label>Quoted Labor Hours</label>
+        <input id="quoted-labor-hours" name="quoted_labor_hours" type="number" step="0.01" value="{{ quote.quoted_labor_hours }}">
     </div>
-    <div class="metric card">
-        <span>Direct Cost</span>
-        <strong>${{ totals.cost }}</strong>
+    <div class="sph-input">
+        <label>Hourly Labor Rate</label>
+        <input id="hourly-labor-rate" name="hourly_labor_rate" type="number" step="0.01" value="{{ quote.hourly_labor_rate }}">
     </div>
-    <div class="metric card">
-        <span>Gross Profit</span>
-        <strong>${{ totals.gross_profit }}</strong>
-    </div>
-    <div class="metric card {% if totals.passes_target_margin %}pass{% else %}fail{% endif %}">
-        <span>Gross Margin</span>
-        <strong>{{ totals.gross_margin_percent }}%</strong>
-        <small>Target {{ totals.target_margin_percent }}%</small>
-    </div>
-    <div class="metric card">
-        <span>Labor Hours</span>
-        <strong>{{ totals.labor_hours }}</strong>
-    </div>
-    <div class="metric card">
-        <span>Profit / Hour</span>
-        <strong>${{ totals.profit_per_hour }}</strong>
-    </div>
-    <div class="metric card">
-        <span>SPH</span>
-        <strong>${{ totals.sales_per_hour }}</strong>
-        <small>Sales ÷ labor hours</small>
-    </div>
+    <div class="sph-metric"><span>Total Revenue</span><strong id="total-revenue">${{ totals.revenue }}</strong></div>
+    <div class="sph-metric"><span>Total Cost</span><strong id="total-cost">${{ totals.cost }}</strong></div>
+    <div class="sph-metric"><span>Gross Markup</span><strong id="gross-markup">${{ totals.gross_markup }}</strong></div>
+    <div class="sph-metric primary"><span>SPH</span><strong id="sph-value">${{ totals.sph }}/hr</strong></div>
 </section>
 
-<section class="card quote-sheet-card">
-    <div class="section-heading-row">
+<section class="card sheet-card">
+    <div class="sheet-toolbar">
         <div>
-            <h2>Quote worksheet</h2>
-            <p class="subtle">Edit each row like a spreadsheet. Labor rows use quantity as labor hours; those hours also feed the SPH calculation.</p>
+            <h2>Estimate worksheet</h2>
+            <p class="subtle">Edit cells directly. SPH updates from gross markup: (Rate - Cost) × Qty.</p>
+        </div>
+        <div class="actions">
+            <button class="button primary" type="submit">Save Locally</button>
         </div>
     </div>
-
-    {% if quote.lines %}
-        <div class="table-scroll">
-            <table class="quote-sheet">
-                <thead>
-                    <tr>
-                        <th class="col-type">Type</th>
-                        <th class="col-item">QBO Item</th>
-                        <th class="col-description">Description</th>
-                        <th class="num col-small">Qty / Labor Hrs</th>
-                        <th class="num col-small">Unit Cost</th>
-                        <th class="num col-small">Unit Price</th>
-                        <th class="num col-small">Markup %</th>
-                        <th class="num col-small">Revenue</th>
-                        <th class="num col-small">Cost</th>
-                        <th class="num col-small">SPH Hrs</th>
-                        <th class="col-check">QBO</th>
-                        <th class="col-actions">Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                {% for line in quote.lines|sort(attribute='sort_order') %}
-                    <tr class="quote-line-row {% if line.line_type == 'Labor' %}is-labor{% endif %}" data-line-id="{{ line.id }}">
-                        <td>
-                            <select class="sheet-input line-type-select" name="line_type" form="line-update-{{ line.id }}">
-                                {% for option in ['Imported', 'Labor', 'Material', 'Subcontractor', 'Equipment', 'Disposal', 'Site Development', 'Other'] %}
-                                    <option value="{{ option }}" {% if line.line_type == option %}selected{% endif %}>{{ option }}</option>
-                                {% endfor %}
-                            </select>
-                        </td>
-                        <td>
-                            <select class="sheet-input" name="qbo_item_id" form="line-update-{{ line.id }}">
-                                <option value="">Do not map</option>
-                                {% for item in items %}
-                                    <option value="{{ item.qbo_id }}" {% if line.qbo_item_id == item.qbo_id %}selected{% endif %}>
-                                        {{ item.fully_qualified_name or item.name }}{% if item.unit_price or item.purchase_cost %} — sale ${{ item.unit_price }}, cost ${{ item.purchase_cost }}{% endif %}
-                                    </option>
-                                {% endfor %}
-                            </select>
-                        </td>
-                        <td>
-                            <input class="sheet-input" name="description" form="line-update-{{ line.id }}" value="{{ line.description }}">
-                        </td>
-                        <td>
-                            <input class="sheet-input num quantity-input" name="quantity" form="line-update-{{ line.id }}" type="number" step="0.01" value="{{ line.quantity }}">
-                        </td>
-                        <td>
-                            <input class="sheet-input num" name="unit_cost" form="line-update-{{ line.id }}" type="number" step="0.01" value="{{ line.unit_cost }}">
-                        </td>
-                        <td>
-                            <input class="sheet-input num" name="unit_price" form="line-update-{{ line.id }}" type="number" step="0.01" value="{{ line.unit_price }}">
-                        </td>
-                        <td class="num calculated-cell">
-                            {% if line.markup_percent is not none %}
-                                {{ line.markup_percent }}%
-                            {% else %}
-                                —
-                            {% endif %}
-                        </td>
-                        <td class="num calculated-cell">${{ line.revenue }}</td>
-                        <td class="num calculated-cell">${{ line.cost }}</td>
-                        <td>
-                            <input class="sheet-input num labor-hours-input" name="labor_hours" form="line-update-{{ line.id }}" type="number" step="0.01" value="{{ line.labor_hours }}">
-                        </td>
-                        <td class="center-cell">
-                            <input name="include_on_qbo_estimate" form="line-update-{{ line.id }}" type="checkbox" {% if line.include_on_qbo_estimate %}checked{% endif %} title="Include on QBO Estimate">
-                        </td>
-                        <td>
-                            <div class="row-actions">
-                                <form id="line-update-{{ line.id }}" method="post" action="/quotes/{{ quote.id }}/lines/{{ line.id }}/update"></form>
-                                <button class="button tiny" type="submit" form="line-update-{{ line.id }}">Save</button>
-                                <form id="line-delete-{{ line.id }}" method="post" action="/quotes/{{ quote.id }}/lines/{{ line.id }}/delete"></form>
-                                <button class="link-button tiny-link" type="submit" form="line-delete-{{ line.id }}">Delete</button>
-                            </div>
-                        </td>
-                    </tr>
-                {% endfor %}
-                </tbody>
-            </table>
-        </div>
-    {% else %}
-        <p>No lines yet.</p>
-    {% endif %}
-</section>
-
-<section class="card quote-sheet-card">
-    <h2>Add line</h2>
-    <form id="add-line-form" method="post" action="/quotes/{{ quote.id }}/lines"></form>
-    <div class="table-scroll">
-        <table class="quote-sheet add-line-sheet">
+    <div class="table-scroll sheet-scroll">
+        <table class="estimate-sheet" id="estimate-sheet">
             <thead>
                 <tr>
-                    <th class="col-type">Type</th>
-                    <th class="col-item">QBO Item</th>
+                    <th class="col-product">Product/Service</th>
                     <th class="col-description">Description</th>
-                    <th class="num col-small">Qty / Labor Hrs</th>
-                    <th class="num col-small">Unit Cost</th>
-                    <th class="num col-small">Unit Price</th>
-                    <th class="num col-small">SPH Hrs</th>
-                    <th class="col-check">QBO</th>
-                    <th class="col-actions">Action</th>
+                    <th class="num col-qty">Qty</th>
+                    <th class="num col-money">Cost</th>
+                    <th class="num col-markup">Markup %</th>
+                    <th class="num col-money">Rate</th>
+                    <th class="num col-money">Amount</th>
+                    <th class="col-delete">Delete</th>
                 </tr>
             </thead>
             <tbody>
-                <tr class="quote-line-row add-row">
+            {% for line in quote.lines|sort(attribute='sort_order') %}
+                <tr id="line-{{ line.id }}" class="sheet-row {% if line.is_section_header %}section-row{% endif %} {% if line.is_variable_cost %}variable-cost-row{% endif %}" data-line-id="{{ line.id }}">
                     <td>
-                        <select class="sheet-input line-type-select" name="line_type" form="add-line-form">
-                            <option>Labor</option>
-                            <option selected>Material</option>
-                            <option>Subcontractor</option>
-                            <option>Equipment</option>
-                            <option>Disposal</option>
-                            <option>Site Development</option>
-                            <option>Other</option>
-                        </select>
+                        <input class="cell-input product-input" name="line_{{ line.id }}_product_service" list="qbo-item-list" value="{{ line.product_service_name or line.qbo_item_name or '' }}" placeholder="Product/Service">
+                        {% if line.is_variable_cost %}<span class="mini-tag">Variable cost</span>{% endif %}
                     </td>
-                    <td>
-                        <select class="sheet-input" name="qbo_item_id" form="add-line-form">
-                            <option value="">Do not map yet</option>
-                            {% for item in items %}
-                                <option value="{{ item.qbo_id }}">
-                                    {{ item.fully_qualified_name or item.name }}{% if item.unit_price or item.purchase_cost %} — sale ${{ item.unit_price }}, cost ${{ item.purchase_cost }}{% endif %}
-                                </option>
-                            {% endfor %}
-                        </select>
-                    </td>
-                    <td>
-                        <input class="sheet-input" name="description" form="add-line-form" placeholder="Customer-facing line description">
-                    </td>
-                    <td>
-                        <input class="sheet-input num quantity-input" name="quantity" form="add-line-form" type="number" step="0.01" value="1.00">
-                    </td>
-                    <td>
-                        <input class="sheet-input num" name="unit_cost" form="add-line-form" type="number" step="0.01" value="0.00">
-                    </td>
-                    <td>
-                        <input class="sheet-input num" name="unit_price" form="add-line-form" type="number" step="0.01" value="0.00">
-                    </td>
-                    <td>
-                        <input class="sheet-input num labor-hours-input" name="labor_hours" form="add-line-form" type="number" step="0.01" value="0.00">
-                    </td>
-                    <td class="center-cell">
-                        <input name="include_on_qbo_estimate" form="add-line-form" type="checkbox" checked title="Include on QBO Estimate">
-                    </td>
-                    <td>
-                        <button class="button primary tiny" type="submit" form="add-line-form">Add</button>
+                    <td><input class="cell-input description-input" name="line_{{ line.id }}_description" value="{{ line.description }}" placeholder="Description"></td>
+                    <td><input class="cell-input num qty-input" name="line_{{ line.id }}_quantity" type="number" step="0.01" value="{{ line.quantity if not line.is_section_header else '' }}"></td>
+                    <td><input class="cell-input num cost-input" name="line_{{ line.id }}_unit_cost" type="number" step="0.01" value="{{ line.unit_cost if not line.is_section_header else '' }}"></td>
+                    <td><input class="cell-input num markup-input" type="number" step="0.01" value="{{ line.markup_percent if line.markup_percent is not none else '' }}"></td>
+                    <td><input class="cell-input num rate-input" name="line_{{ line.id }}_unit_price" type="number" step="0.01" value="{{ line.unit_price if not line.is_section_header else '' }}"></td>
+                    <td class="num amount-cell">${{ line.revenue if not line.is_section_header else '' }}</td>
+                    <td class="delete-cell">
+                        <button class="link-button delete-button" type="submit" form="delete-line-{{ line.id }}">Delete</button>
                     </td>
                 </tr>
+            {% else %}
+                <tr><td colspan="8">No lines yet.</td></tr>
+            {% endfor %}
             </tbody>
         </table>
     </div>
 </section>
+</form>
 
-<section class="card note compact-note">
-    <h2>SPH and markup rules</h2>
-    <p><strong>SPH</strong> is sales per labor hour: total quote revenue divided by estimated labor hours. <strong>Line markup %</strong> is calculated as line gross profit divided by line cost.</p>
-    <p>For <strong>Labor</strong> rows, the Qty / Labor Hrs cell is treated as hours. The app automatically copies that value into SPH Hrs when you save the row.</p>
+<datalist id="qbo-item-list">
+{% for item in items %}
+    <option value="{{ item.fully_qualified_name or item.name }}"></option>
+{% endfor %}
+</datalist>
+
+{% for line in quote.lines %}
+<form id="delete-line-{{ line.id }}" method="post" action="/quotes/{{ quote.id }}/lines/{{ line.id }}/delete"></form>
+{% endfor %}
+
+<section class="card action-card">
+    <div class="actions left">
+        <form method="post" action="/quotes/{{ quote.id }}/lines"><button class="button" type="submit">Add Item Row</button></form>
+        <form method="post" action="/quotes/{{ quote.id }}/lines/header"><button class="button" type="submit">Add Header Row</button></form>
+        {% if quote.qbo_estimate_id %}<form method="post" action="/quotes/{{ quote.id }}/upload-sph"><button class="button primary" type="submit" {% if qbo.read_only %}disabled title="QBO_READ_ONLY is enabled"{% endif %}>Upload SPH to QBO</button></form>{% endif %}
+    </div>
+    <p class="subtle">Variable-cost items such as MC, MI, and MP ignore the QBO item-list default price on import. Enter their line-specific vendor cost here.</p>
 </section>
 
 <script>
-function applyLaborBehavior(row) {
-    const typeSelect = row.querySelector('.line-type-select');
-    const quantityInput = row.querySelector('.quantity-input');
-    const laborHoursInput = row.querySelector('.labor-hours-input');
-    if (!typeSelect || !quantityInput || !laborHoursInput) return;
-
-    const isLabor = typeSelect.value === 'Labor';
-    row.classList.toggle('is-labor', isLabor);
-    quantityInput.placeholder = isLabor ? 'Labor hours' : 'Qty';
-    quantityInput.title = isLabor ? 'For labor rows, this is labor hours.' : 'Quantity';
-
-    if (isLabor) {
-        laborHoursInput.value = quantityInput.value;
-        laborHoursInput.readOnly = true;
-        laborHoursInput.title = 'Labor rows use quantity as SPH hours.';
-    } else {
-        laborHoursInput.readOnly = false;
-        laborHoursInput.title = 'Optional production hours used for SPH.';
+(function(){
+    const money = (n) => '$' + (Number.isFinite(n) ? n : 0).toFixed(2);
+    const num = (value) => {
+        const n = parseFloat(value);
+        return Number.isFinite(n) ? n : 0;
+    };
+    function updateRow(row, sourceClass) {
+        const qtyEl = row.querySelector('.qty-input');
+        const costEl = row.querySelector('.cost-input');
+        const markupEl = row.querySelector('.markup-input');
+        const rateEl = row.querySelector('.rate-input');
+        const amountEl = row.querySelector('.amount-cell');
+        const isHeader = row.classList.contains('section-row');
+        if (isHeader) {
+            amountEl.textContent = '';
+            return { revenue: 0, cost: 0, markup: 0 };
+        }
+        const qty = num(qtyEl.value);
+        const cost = num(costEl.value);
+        let markup = num(markupEl.value);
+        let rate = num(rateEl.value);
+        if (sourceClass === 'markup-input' || sourceClass === 'cost-input') {
+            rate = cost * (1 + markup / 100);
+            rateEl.value = rate.toFixed(2);
+        } else if (sourceClass === 'rate-input') {
+            markup = cost === 0 ? 0 : ((rate - cost) / cost) * 100;
+            markupEl.value = cost === 0 ? '' : markup.toFixed(2);
+        }
+        const revenue = qty * rate;
+        const totalCost = qty * cost;
+        amountEl.textContent = money(revenue);
+        return { revenue, cost: totalCost, markup: revenue - totalCost };
     }
-}
-
-document.querySelectorAll('.quote-line-row').forEach((row) => {
-    applyLaborBehavior(row);
-    const typeSelect = row.querySelector('.line-type-select');
-    const quantityInput = row.querySelector('.quantity-input');
-    if (typeSelect) {
-        typeSelect.addEventListener('change', () => applyLaborBehavior(row));
+    function updateTotals(sourceClass) {
+        let revenue = 0, cost = 0, grossMarkup = 0;
+        document.querySelectorAll('#estimate-sheet tbody tr.sheet-row').forEach(row => {
+            const vals = updateRow(row, sourceClass);
+            revenue += vals.revenue; cost += vals.cost; grossMarkup += vals.markup;
+        });
+        const laborHours = num(document.getElementById('quoted-labor-hours').value);
+        const laborRate = num(document.getElementById('hourly-labor-rate').value);
+        const sph = laborHours === 0 ? 0 : (grossMarkup / laborHours) + laborRate;
+        document.getElementById('total-revenue').textContent = money(revenue);
+        document.getElementById('total-cost').textContent = money(cost);
+        document.getElementById('gross-markup').textContent = money(grossMarkup);
+        document.getElementById('sph-value').textContent = money(sph) + '/hr';
     }
-    if (quantityInput) {
-        quantityInput.addEventListener('input', () => applyLaborBehavior(row));
-    }
-});
+    document.addEventListener('input', function(e){
+        if (e.target.matches('.qty-input,.cost-input,.markup-input,.rate-input,#quoted-labor-hours,#hourly-labor-rate')) {
+            updateTotals(e.target.classList.contains('cost-input') ? 'cost-input' : e.target.classList.contains('markup-input') ? 'markup-input' : e.target.classList.contains('rate-input') ? 'rate-input' : '');
+        }
+    });
+    updateTotals('');
+})();
 </script>
 {% endblock %}

@@ -1,33 +1,13 @@
 {% extends "base.html" %}
 {% block content %}
 <section class="card narrow">
-    <h1>New quote</h1>
+    <h1>New local quote</h1>
     <form method="post" action="/quotes" class="form-stack">
-        <label>
-            Quote title
-            <input name="title" required placeholder="Example: Smith backyard patio">
+        <label>Quote title <input name="title" required placeholder="Example: Smith backyard planting"></label>
+        <label>QBO customer
+            <select name="customer_qbo_id"><option value="">Manual / not selected</option>{% for customer in customers %}<option value="{{ customer.qbo_id }}">{{ customer.display_name }}</option>{% endfor %}</select>
         </label>
-
-        <label>
-            QBO customer
-            <select name="customer_qbo_id">
-                <option value="">Manual / not selected</option>
-                {% for customer in customers %}
-                    <option value="{{ customer.qbo_id }}">{{ customer.display_name }}</option>
-                {% endfor %}
-            </select>
-        </label>
-
-        <label>
-            Manual customer name
-            <input name="customer_name_manual" placeholder="Use only if customer is not cached yet">
-        </label>
-
-        <label>
-            Target gross margin %
-            <input name="target_margin_percent" type="number" step="0.01" value="40.00">
-        </label>
-
+        <label>Manual customer name <input name="customer_name_manual" placeholder="Use if customer is not cached"></label>
         <button class="button primary" type="submit">Create Quote</button>
     </form>
 </section>
