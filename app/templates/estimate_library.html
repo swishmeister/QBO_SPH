@@ -3,14 +3,22 @@
 <section class="card hero slim-hero">
     <div>
         <h1>Estimate Library</h1>
-        <p>Import current-year estimates, refresh the local library, and search by customer name or estimate number.</p>
+        <p>Search local estimates and quickly import or refresh recent QBO estimates.</p>
     </div>
     <div class="actions">
-        <form method="post" action="/estimates/import-year"><button class="button primary" type="submit" {% if not qbo.connected %}disabled{% endif %}>Import From Jan 1</button></form>
-        <form method="post" action="/estimates/refresh"><button class="button" type="submit" {% if not qbo.connected %}disabled{% endif %}>Refresh Library</button></form>
-        <a class="button" href="/qbo/import-estimate">Import Older Estimate #</a>
+        <form method="post" action="/estimates/import-recent"><button class="button primary" type="submit" {% if not qbo.connected %}disabled{% endif %}>Refresh Last {{ default_refresh_days }} Days</button></form>
+        <form method="post" action="/estimates/import-90"><button class="button" type="submit" {% if not qbo.connected %}disabled{% endif %}>Refresh Last 90 Days</button></form>
+        <form method="post" action="/estimates/import-year"><button class="button" type="submit" {% if not qbo.connected %}disabled{% endif %}>Refresh Year-to-Date</button></form>
+        <a class="button" href="/qbo/import-estimate">Import Estimate #</a>
     </div>
 </section>
+
+{% if request.query_params.get('imported_recent') %}
+    <div class="notice success">Refreshed {{ request.query_params.get('count', '0') }} estimate(s) from the last {{ request.query_params.get('days', default_refresh_days) }} days.</div>
+{% endif %}
+{% if request.query_params.get('imported_year') %}
+    <div class="notice success">Refreshed {{ request.query_params.get('count', '0') }} year-to-date estimate(s).</div>
+{% endif %}
 
 <section class="card">
     <form class="search-row" method="get" action="/estimates">
@@ -23,7 +31,6 @@
             <thead><tr><th>Estimate #</th><th>Date</th><th>Customer</th><th>Status</th><th class="num">QBO Total</th><th class="num">SPH</th><th>Last Synced</th><th></th></tr></thead>
             <tbody>
             {% for quote in quotes %}
-                {% set totals = quote.lines and quote_totals(quote) if false else None %}
                 <tr>
                     <td data-label="Estimate #"><strong>{{ quote.qbo_estimate_doc_number or quote.qbo_estimate_id or quote.id }}</strong></td>
                     <td data-label="Date">{{ quote.qbo_txn_date or '—' }}</td>
@@ -35,7 +42,7 @@
                     <td data-label="Actions"><a class="button mobile-inline-button" href="/quotes/{{ quote.id }}">Open</a></td>
                 </tr>
             {% else %}
-                <tr><td colspan="8">No estimates found. Import current-year estimates or look up an older estimate by number.</td></tr>
+                <tr><td colspan="8">No estimates found. Refresh recent estimates or import an older estimate by number.</td></tr>
             {% endfor %}
             </tbody>
         </table>

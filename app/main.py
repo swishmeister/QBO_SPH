@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Annotated
@@ -31,7 +31,7 @@ from .qbo_client import (
     fetch_estimates_from_date,
     qbo_query,
     revoke_qbo_tokens,
-    update_qbo_estimate_sph,
+    update_qbo_estimate_sph_value,
     update_qbo_item_prices,
 )
 
@@ -250,6 +250,77 @@ def item_is_labor(item: QboItem | None, fallback_name: str | None = None) -> boo
     return is_labor_item_name(fallback_name or (item.fully_qualified_name if item else None) or (item.name if item else None))
 
 
+def calculate_sph_from_submitted_quote_form(form, quote: Quote) -> dict[str, Decimal]:
+    """Calculate SPH directly from the submitted worksheet values.
+
+    This function intentionally does not rely on Save Locally or persisted quote
+    line values. It is used by Upload SPH to QBO so the number uploaded matches
+    what is currently visible on the estimate screen.
+    """
+    revenue = Decimal("0.00")
+    cost_total = Decimal("0.00")
+    gross_markup = Decimal("0.00")
+    detected_labor_hours = Decimal("0.00")
+    detected_labor_revenue = Decimal("0.00")
+
+    for line in sorted(list(quote.lines), key=lambda x: x.sort_order or 0):
+        prefix = f"line_{line.id}_"
+        has_submitted_line = (prefix + "description") in form or (prefix + "product_service") in form
+        if not has_submitted_line:
+            continue
+
+        product_service = str(form.get(prefix + "product_service") or "").strip()
+        description = str(form.get(prefix + "description") or "").strip()
+        quantity = parse_decimal(form.get(prefix + "quantity"), "0.00")
+        unit_cost = parse_decimal(form.get(prefix + "unit_cost"), "0.00")
+        submitted_rate = parse_decimal(form.get(prefix + "unit_price"), "0.00")
+        submitted_markup_raw = form.get(prefix + "markup_percent")
+        calc_source = str(form.get(prefix + "calc_source") or "").strip()
+
+        numeric_is_empty = quantity == 0 and unit_cost == 0 and submitted_rate == 0 and submitted_markup_raw in (None, "")
+        if product_service == "" and numeric_is_empty:
+            # Description-only/header rows do not affect totals or SPH.
+            continue
+
+        labor_item = is_labor_item_name(product_service or line.qbo_item_name or line.product_service_name or description)
+
+        if labor_item:
+            # LC:* lines supply quoted hours and labor rate. They do not create
+            # gross material markup for SPH.
+            detected_labor_hours += quantity
+            detected_labor_revenue += quantity * submitted_rate
+            continue
+
+        rate = submitted_rate
+        if calc_source in {"cost-input", "markup-input"} and submitted_markup_raw not in (None, ""):
+            submitted_markup = parse_decimal(submitted_markup_raw, "0.00")
+            rate = (unit_cost * (Decimal("1.00") + (submitted_markup / Decimal("100.00")))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+        line_revenue = quantity * rate
+        line_cost = quantity * unit_cost
+        revenue += line_revenue
+        cost_total += line_cost
+        gross_markup += line_revenue - line_cost
+
+    quoted_labor_hours = parse_decimal(form.get("quoted_labor_hours"), "0.00")
+    hourly_labor_rate = parse_decimal(form.get("hourly_labor_rate"), "0.00")
+
+    if detected_labor_hours > 0:
+        quoted_labor_hours = detected_labor_hours.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        hourly_labor_rate = (detected_labor_revenue / detected_labor_hours).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+    sph = Decimal("0.00") if quoted_labor_hours == 0 else (gross_markup / quoted_labor_hours) + hourly_labor_rate
+
+    return {
+        "revenue": revenue.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
+        "cost": cost_total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
+        "gross_markup": gross_markup.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
+        "quoted_labor_hours": quoted_labor_hours.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
+        "hourly_labor_rate": hourly_labor_rate.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
+        "sph": sph.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
+    }
+
+
 def find_cached_item(db: Session, qbo_item_id: str | None) -> QboItem | None:
     if not qbo_item_id:
         return None
@@ -425,6 +496,13 @@ def dashboard(request: Request, db: Annotated[Session, Depends(get_db)]):
     )
 
 
+@app.get("/recent-estimates/refresh")
+def refresh_recent_estimates():
+    # Recent estimates are local/database-driven. This gives the dashboard a
+    # classic refresh control without triggering a slower QBO import.
+    return RedirectResponse("/?recent_refreshed=1", status_code=303)
+
+
 @app.get("/qbo/connect")
 def qbo_connect(request: Request):
     if not settings.qbo_client_id or not settings.qbo_client_secret:
@@ -516,25 +594,55 @@ def estimate_library(request: Request, db: Annotated[Session, Depends(get_db)], 
     search_clean = search.strip().lower()
     if search_clean:
         quotes = [q for q in quotes if search_clean in (q.customer_name or "").lower() or search_clean in (q.qbo_estimate_doc_number or "").lower() or search_clean in (q.title or "").lower()]
-    return templates.TemplateResponse("estimate_library.html", {"request": request, "quotes": quotes, "search": search, "qbo": get_qbo_status(db)})
+    default_days = max(int(getattr(settings, "default_estimate_refresh_days", 30) or 30), 1)
+    return templates.TemplateResponse(
+        "estimate_library.html",
+        {
+            "request": request,
+            "quotes": quotes,
+            "search": search,
+            "qbo": get_qbo_status(db),
+            "default_refresh_days": default_days,
+        },
+    )
 
 
-@app.post("/estimates/import-year")
-async def import_current_year_estimates(db: Annotated[Session, Depends(get_db)]):
-    start = date.today().replace(month=1, day=1).isoformat()
+async def import_estimates_since(db: Session, start: date) -> int:
     try:
-        estimates = await fetch_estimates_from_date(db, start)
+        estimates = await fetch_estimates_from_date(db, start.isoformat())
     except QboError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     for estimate in estimates:
         upsert_quote_from_qbo_estimate(db, estimate)
     db.commit()
-    return RedirectResponse("/estimates?imported_year=1", status_code=303)
+    return len(estimates)
+
+
+@app.post("/estimates/import-recent")
+async def import_recent_estimates(db: Annotated[Session, Depends(get_db)]):
+    days = max(int(getattr(settings, "default_estimate_refresh_days", 30) or 30), 1)
+    start = date.today() - timedelta(days=days)
+    count = await import_estimates_since(db, start)
+    return RedirectResponse(f"/estimates?imported_recent=1&days={days}&count={count}", status_code=303)
+
+
+@app.post("/estimates/import-90")
+async def import_last_90_days_estimates(db: Annotated[Session, Depends(get_db)]):
+    start = date.today() - timedelta(days=90)
+    count = await import_estimates_since(db, start)
+    return RedirectResponse(f"/estimates?imported_recent=1&days=90&count={count}", status_code=303)
+
+
+@app.post("/estimates/import-year")
+async def import_current_year_estimates(db: Annotated[Session, Depends(get_db)]):
+    start = date.today().replace(month=1, day=1)
+    count = await import_estimates_since(db, start)
+    return RedirectResponse(f"/estimates?imported_year=1&count={count}", status_code=303)
 
 
 @app.post("/estimates/refresh")
 async def refresh_estimate_library(db: Annotated[Session, Depends(get_db)]):
-    return await import_current_year_estimates(db)
+    return await import_recent_estimates(db)
 
 
 @app.get("/qbo/import-estimate", response_class=HTMLResponse)
@@ -735,19 +843,33 @@ def delete_quote_line(quote_id: int, line_id: int, db: Annotated[Session, Depend
 
 
 @app.post("/quotes/{quote_id}/upload-sph")
-async def upload_sph_to_qbo(quote_id: int, db: Annotated[Session, Depends(get_db)]):
+async def upload_sph_to_qbo(quote_id: int, request: Request, db: Annotated[Session, Depends(get_db)]):
     if settings.qbo_read_only:
         raise HTTPException(status_code=400, detail="QBO read-only mode is enabled. Disable QBO_READ_ONLY to upload SPH to QuickBooks.")
     quote = db.get(Quote, quote_id)
     if quote is None:
         raise HTTPException(status_code=404, detail="Quote not found")
+    if not quote.qbo_estimate_id:
+        raise HTTPException(status_code=400, detail="This quote is not linked to a QBO Estimate, so SPH cannot be uploaded.")
+
+    form = await request.form()
     try:
-        await update_qbo_estimate_sph(db, quote)
+        submitted_totals = calculate_sph_from_submitted_quote_form(form, quote)
+        await update_qbo_estimate_sph_value(db, quote.qbo_estimate_id, submitted_totals["sph"])
     except QboError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=f"Upload SPH failed: {exc}") from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Upload SPH failed: {type(exc).__name__}: {exc}") from exc
+
+    # Store only the uploaded SPH timestamp and top-level labor values for reference.
+    # The worksheet lines themselves do not need Save Locally before uploading SPH.
     quote.sph_uploaded_at = datetime.now(timezone.utc)
+    quote.quoted_labor_hours = submitted_totals["quoted_labor_hours"]
+    quote.hourly_labor_rate = submitted_totals["hourly_labor_rate"]
     db.commit()
-    return RedirectResponse(f"/quotes/{quote.id}?uploaded_sph=1", status_code=303)
+    return RedirectResponse(f"/quotes/{quote.id}?uploaded_sph=1&sph={submitted_totals['sph']}", status_code=303)
 
 
 @app.post("/quotes/{quote_id}/sync-estimate")
