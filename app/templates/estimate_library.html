@@ -25,14 +25,14 @@
             {% for quote in quotes %}
                 {% set totals = quote.lines and quote_totals(quote) if false else None %}
                 <tr>
-                    <td><strong>{{ quote.qbo_estimate_doc_number or quote.qbo_estimate_id or quote.id }}</strong></td>
-                    <td>{{ quote.qbo_txn_date or '—' }}</td>
-                    <td>{{ quote.customer_name }}</td>
-                    <td><span class="badge">{{ quote.status }}</span></td>
-                    <td class="num">${{ quote.qbo_total_amount }}</td>
-                    <td class="num">{% if quote.quoted_labor_hours and quote.quoted_labor_hours != 0 %}${{ quote_totals(quote).sph }}/hr{% else %}—{% endif %}</td>
-                    <td>{{ quote.last_synced_at.strftime('%Y-%m-%d %H:%M') if quote.last_synced_at else '—' }}</td>
-                    <td><a href="/quotes/{{ quote.id }}">Open</a></td>
+                    <td data-label="Estimate #"><strong>{{ quote.qbo_estimate_doc_number or quote.qbo_estimate_id or quote.id }}</strong></td>
+                    <td data-label="Date">{{ quote.qbo_txn_date or '—' }}</td>
+                    <td data-label="Customer">{{ quote.customer_name }}</td>
+                    <td data-label="Status"><span class="badge">{{ quote.status }}</span></td>
+                    <td class="num" data-label="QBO Total">${{ quote.qbo_total_amount }}</td>
+                    <td class="num" data-label="SPH">{% if quote.quoted_labor_hours and quote.quoted_labor_hours != 0 %}${{ quote_totals(quote).sph }}/hr{% else %}—{% endif %}</td>
+                    <td data-label="Last Synced">{{ quote.last_synced_at.strftime('%Y-%m-%d %H:%M') if quote.last_synced_at else '—' }}</td>
+                    <td data-label="Actions"><a class="button mobile-inline-button" href="/quotes/{{ quote.id }}">Open</a></td>
                 </tr>
             {% else %}
                 <tr><td colspan="8">No estimates found. Import current-year estimates or look up an older estimate by number.</td></tr>

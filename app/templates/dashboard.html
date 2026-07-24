@@ -49,11 +49,11 @@
             <tbody>
             {% for quote in quotes %}
                 <tr>
-                    <td>{{ quote.qbo_estimate_doc_number or quote.title }}</td>
-                    <td>{{ quote.qbo_txn_date or '—' }}</td>
-                    <td>{{ quote.customer_name }}</td>
-                    <td><span class="badge">{{ quote.status }}</span></td>
-                    <td><a href="/quotes/{{ quote.id }}">Open</a></td>
+                    <td data-label="Estimate #">{{ quote.qbo_estimate_doc_number or quote.title }}</td>
+                    <td data-label="Date">{{ quote.qbo_txn_date or '—' }}</td>
+                    <td data-label="Customer">{{ quote.customer_name }}</td>
+                    <td data-label="Status"><span class="badge">{{ quote.status }}</span></td>
+                    <td data-label="Actions"><a class="button mobile-inline-button" href="/quotes/{{ quote.id }}">Open</a></td>
                 </tr>
             {% endfor %}
             </tbody>
