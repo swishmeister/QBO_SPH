@@ -540,3 +540,19 @@ table.estimate-sheet tbody tr.section-row { background:#f7fbff !important; font-
     .range-label select { width:100%; }
     .library-actions { display:grid; grid-template-columns:1fr; width:100%; }
 }
+
+/* Variable-cost placeholders need to stand out because the designer must enter real cost. */
+table.estimate-sheet tbody tr.variable-cost-row { background:#ffe4ef !important; }
+.variable-tag { background:#ffe4ef; color:#9f1239; border:1px solid #f9a8d4; }
+.variable-hint { display:block; margin:3px 0 0 3px; color:#9f1239; font-size:10px; font-weight:700; line-height:1.2; }
+.cell-input[readonly] { background:#f3f4f6 !important; color:#667085; cursor:not-allowed; }
+.variable-cost-row .cost-input:not([readonly]) { background:#fff !important; outline:1px solid #f472b6; outline-offset:-1px; }
+
+@media (max-width: 760px) {
+    .estimate-sheet tr.variable-cost-row, .item-sheet tr.variable-cost-row {
+        background:#fff1f6 !important;
+        border-left:5px solid #db2777;
+    }
+    .variable-hint { font-size:12px; margin-top:4px; }
+    .variable-cost-row .cost-input:not([readonly]) { border-color:#db2777 !important; box-shadow:0 0 0 2px rgba(219,39,119,.12); }
+}

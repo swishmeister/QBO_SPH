@@ -62,11 +62,11 @@
                     <td data-label="Product/Service">
                         <input class="line-calc-source" type="hidden" name="line_{{ line.id }}_calc_source" value="">
                         <input class="cell-input product-input" name="line_{{ line.id }}_product_service" list="qbo-item-list" value="{{ line.product_service_name or line.qbo_item_name or '' }}" placeholder="Product/Service">
-                        {% if line.is_variable_cost %}<span class="mini-tag">Variable cost</span>{% endif %}{% if line.line_type == 'Labor' %}<span class="mini-tag labor-tag">Labor</span>{% endif %}
+                        {% if line.is_variable_cost %}<span class="mini-tag variable-tag">Variable cost</span><small class="variable-hint">Add purchase price to Cost column.</small>{% endif %}{% if line.line_type == 'Labor' %}<span class="mini-tag labor-tag">Labor</span>{% endif %}
                     </td>
                     <td data-label="Description"><input class="cell-input description-input" name="line_{{ line.id }}_description" value="{{ line.description }}" placeholder="Description"></td>
                     <td data-label="Qty"><input class="cell-input num qty-input" name="line_{{ line.id }}_quantity" type="number" step="0.01" value="{{ line.quantity if not line.is_section_header else '' }}"></td>
-                    <td data-label="Cost"><input class="cell-input num cost-input" name="line_{{ line.id }}_unit_cost" type="number" step="0.01" value="{{ line.unit_cost if not line.is_section_header else '' }}"></td>
+                    <td data-label="Cost"><input class="cell-input num cost-input" name="line_{{ line.id }}_unit_cost" type="number" step="0.01" value="{{ line.unit_cost if not line.is_section_header else '' }}" {% if not line.is_variable_cost %}readonly title="Cost is editable only for MC/MI/MP/MM variable-cost items"{% endif %}></td>
                     <td data-label="Markup %"><input class="cell-input num markup-input" name="line_{{ line.id }}_markup_percent" type="number" step="0.01" value="{{ line.markup_percent if line.markup_percent is not none else '' }}"></td>
                     <td data-label="Rate"><input class="cell-input num rate-input" name="line_{{ line.id }}_unit_price" type="number" step="0.01" value="{{ line.unit_price if not line.is_section_header else '' }}"></td>
                     <td class="num amount-cell" data-label="Amount">${{ line.revenue if not line.is_section_header else '' }}</td>
@@ -107,6 +107,18 @@
         const n = parseFloat(value);
         return Number.isFinite(n) ? n : 0;
     };
+    function isVariableCodeName(value) {
+        const codes = new Set(['MC', 'MI', 'MP', 'MM']);
+        const text = String(value || '').trim().toUpperCase();
+        if (!text) return false;
+        const segments = text.split(':').map(s => s.trim()).filter(Boolean);
+        const candidates = [text];
+        segments.forEach(segment => {
+            candidates.push(segment);
+            candidates.push((segment.split(/\s+/)[0] || '').trim());
+        });
+        return candidates.some(candidate => codes.has(candidate));
+    }
     function updateRow(row, sourceClass) {
         const qtyEl = row.querySelector('.qty-input');
         const costEl = row.querySelector('.cost-input');
@@ -115,7 +127,8 @@
         const amountEl = row.querySelector('.amount-cell');
         const isHeader = row.classList.contains('section-row');
         const isLabor = row.classList.contains('labor-row') || (row.querySelector('.product-input')?.value || '').trim().toUpperCase().includes('LC:');
-        const isVariableCost = row.dataset.variableCost === '1' || row.classList.contains('variable-cost-row');
+        const productName = (row.querySelector('.product-input')?.value || '').trim();
+        const isVariableCost = row.dataset.variableCost === '1' || row.classList.contains('variable-cost-row') || isVariableCodeName(productName);
         if (isHeader) {
             amountEl.textContent = '';
             return { revenue: 0, cost: 0, markup: 0 };

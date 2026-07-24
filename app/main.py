@@ -209,12 +209,28 @@ def _settings_list(attr_name: str, default: list[str]) -> list[str]:
 
 
 def is_variable_cost_item_name(name: str | None) -> bool:
+    """Return True for variable-cost placeholder item codes such as MC, MI, MP, and MM.
+
+    QBO item names may arrive as just ``MC`` or as grouped names such as
+    ``Materials:MC`` or ``MM:Mulch material``. Check every colon-delimited
+    segment and each segment's first token so all placeholder codes follow the
+    same rule.
+    """
     if not name:
         return False
     variable_codes = set(_settings_list("variable_cost_item_codes", ["MC", "MI", "MP", "MM"]))
-    final_segment = name.split(":")[-1].strip().upper()
-    first_token = final_segment.split()[0].strip().upper() if final_segment.split() else final_segment
-    return final_segment in variable_codes or first_token in variable_codes
+    raw_segments = [segment.strip().upper() for segment in str(name).split(":") if segment.strip()]
+    candidates: list[str] = []
+    candidates.append(str(name).strip().upper())
+    for segment in raw_segments:
+        candidates.append(segment)
+        first_token = segment.split()[0].strip().upper() if segment.split() else segment
+        candidates.append(first_token)
+    if raw_segments:
+        final_segment = raw_segments[-1]
+        candidates.append(final_segment)
+        candidates.append(final_segment.split()[0].strip().upper() if final_segment.split() else final_segment)
+    return any(candidate in variable_codes for candidate in candidates)
 
 
 def item_is_variable(item: QboItem | None, fallback_name: str | None = None) -> bool:
@@ -418,8 +434,18 @@ def qbo_estimate_line_to_quote_line(db: Session, estimate_line: dict, quote_id: 
         # Labor service codes such as LC:MA and LC:PL represent quoted hours.
         # Set cost equal to the labor rate so labor contributes hours/rate but not gross item markup.
         unit_cost = imported_unit_price
+    elif variable_cost:
+        # MC/MI/MP/MM are variable-cost placeholders. Import them with cost equal
+        # to the estimate sale rate so markup starts at 0%, then flag the row so
+        # the designer knows to replace Cost with the real purchase price. On a
+        # later refresh, preserve a designer-entered cost unless it is still 0.
+        existing_cost = Decimal(existing.unit_cost or Decimal("0.00")) if existing is not None else None
+        if existing is None or not existing.is_variable_cost or existing_cost == 0:
+            unit_cost = imported_unit_price
+        else:
+            unit_cost = existing_cost
     elif existing is None:
-        unit_cost = Decimal("0.00") if variable_cost else Decimal(cached_item.purchase_cost or Decimal("0.00")) if cached_item else Decimal("0.00")
+        unit_cost = Decimal(cached_item.purchase_cost or Decimal("0.00")) if cached_item else Decimal("0.00")
     else:
         unit_cost = Decimal(existing.unit_cost or Decimal("0.00"))
 
@@ -746,6 +772,18 @@ def quote_detail(request: Request, quote_id: int, db: Annotated[Session, Depends
     if quote is None:
         raise HTTPException(status_code=404, detail="Quote not found")
     touch_quote(quote)
+
+    # Reclassify any existing MC/MI/MP/MM lines when the estimate is opened so
+    # older imports immediately pick up the current variable-cost rules.
+    for line in quote.lines:
+        variable_name = is_variable_cost_item_name(line.product_service_name or line.qbo_item_name or line.description)
+        if variable_name:
+            line.is_variable_cost = True
+            if line.line_type != "Labor" and not line.is_section_header:
+                line.line_type = "Variable Cost"
+                if Decimal(line.unit_cost or Decimal("0.00")) == 0:
+                    line.unit_cost = Decimal(line.unit_price or Decimal("0.00"))
+
     db.commit()
     db.refresh(quote)
     items = db.scalars(select(QboItem).where(QboItem.active == True).order_by(QboItem.fully_qualified_name, QboItem.name)).all()  # noqa: E712

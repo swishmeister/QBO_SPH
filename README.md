@@ -53,7 +53,8 @@ Rules:
 
 - The app ignores the QBO item-list default price/cost for these items during estimate import.
 - The app uses the actual QBO estimate line rate/amount from the transaction.
-- The internal cost field is left as its saved line-level value, or blank/zero for new imports, so the user can enter the real vendor cost.
+- On first import, Cost is set equal to the estimate Rate so markup starts at 0%. The row is highlighted so the user knows to replace Cost with the real purchase price.
+- On later refreshes, the app preserves a designer-entered cost unless the cost is still zero.
 - These items are locked out of Item Price Manager uploads.
 
 Configure the code list with:
