@@ -6,10 +6,14 @@
         <p><strong>{{ quote.customer_name }}</strong>{% if quote.qbo_txn_date %} · {{ quote.qbo_txn_date }}{% endif %}{% if quote.last_synced_at %} · Last synced {{ quote.last_synced_at.strftime('%Y-%m-%d %H:%M') }}{% endif %}</p>
     </div>
     <div class="actions">
-        {% if quote.qbo_estimate_id %}<form method="post" action="/quotes/{{ quote.id }}/refresh-from-qbo"><button class="button" type="submit">Refresh From QBO</button></form>{% endif %}
+        {% if quote.qbo_estimate_id %}<a class="button" href="/quotes/{{ quote.id }}/refresh-from-qbo">Refresh From QBO</a>{% endif %}
         <a class="button" href="/estimates">Back to Library</a>
     </div>
 </section>
+
+{% if request.query_params.get('saved') %}<div class="notice success">Saved locally.</div>{% endif %}
+{% if request.query_params.get('refreshed') %}<div class="notice success">Estimate refreshed from QuickBooks.</div>{% endif %}
+{% if request.query_params.get('uploaded_sph') %}<div class="notice success">SPH uploaded to QuickBooks.</div>{% endif %}
 
 <form id="quote-sheet-form" method="post" action="/quotes/{{ quote.id }}/save">
 <section class="sph-bar card">
@@ -34,7 +38,7 @@
             <p class="subtle">Edit cells directly. SPH updates from gross markup: (Rate - Cost) × Qty.</p>
         </div>
         <div class="actions">
-            <button class="button primary" type="submit">Save Locally</button>
+            <button id="save-locally-button" class="button primary" type="submit" form="quote-sheet-form">Save Locally</button>
         </div>
     </div>
     <div class="table-scroll sheet-scroll">
@@ -61,7 +65,7 @@
                     <td data-label="Description"><input class="cell-input description-input" name="line_{{ line.id }}_description" value="{{ line.description }}" placeholder="Description"></td>
                     <td data-label="Qty"><input class="cell-input num qty-input" name="line_{{ line.id }}_quantity" type="number" step="0.01" value="{{ line.quantity if not line.is_section_header else '' }}"></td>
                     <td data-label="Cost"><input class="cell-input num cost-input" name="line_{{ line.id }}_unit_cost" type="number" step="0.01" value="{{ line.unit_cost if not line.is_section_header else '' }}"></td>
-                    <td data-label="Markup %"><input class="cell-input num markup-input" type="number" step="0.01" value="{{ line.markup_percent if line.markup_percent is not none else '' }}"></td>
+                    <td data-label="Markup %"><input class="cell-input num markup-input" name="line_{{ line.id }}_markup_percent" type="number" step="0.01" value="{{ line.markup_percent if line.markup_percent is not none else '' }}"></td>
                     <td data-label="Rate"><input class="cell-input num rate-input" name="line_{{ line.id }}_unit_price" type="number" step="0.01" value="{{ line.unit_price if not line.is_section_header else '' }}"></td>
                     <td class="num amount-cell" data-label="Amount">${{ line.revenue if not line.is_section_header else '' }}</td>
                     <td class="delete-cell" data-label="Delete">
@@ -90,7 +94,6 @@
 <section class="card action-card">
     <div class="actions left">
         <form method="post" action="/quotes/{{ quote.id }}/lines"><button class="button" type="submit">Add Item Row</button></form>
-        <form method="post" action="/quotes/{{ quote.id }}/lines/header"><button class="button" type="submit">Add Header Row</button></form>
         {% if quote.qbo_estimate_id %}<form method="post" action="/quotes/{{ quote.id }}/upload-sph"><button class="button primary" type="submit" {% if qbo.read_only %}disabled title="QBO_READ_ONLY is enabled"{% endif %}>Upload SPH to QBO</button></form>{% endif %}
     </div>
     <p class="subtle">Variable-cost items such as MC, MI, and MP ignore the QBO item-list default price on import. Enter their line-specific vendor cost here.</p>
@@ -161,6 +164,13 @@
             updateTotals(e.target.classList.contains('cost-input') ? 'cost-input' : e.target.classList.contains('markup-input') ? 'markup-input' : e.target.classList.contains('rate-input') ? 'rate-input' : '');
         }
     });
+    const form = document.getElementById('quote-sheet-form');
+    if (form) {
+        form.addEventListener('submit', function(){
+            const active = document.activeElement;
+            updateTotals(active?.classList?.contains('markup-input') ? 'markup-input' : active?.classList?.contains('cost-input') ? 'cost-input' : active?.classList?.contains('rate-input') ? 'rate-input' : '');
+        });
+    }
     updateTotals('');
 })();
 </script>

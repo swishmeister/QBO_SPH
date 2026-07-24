@@ -331,3 +331,7 @@ table.estimate-sheet tbody tr.section-row { background:#f7fbff !important; font-
     .col-product { width:220px; }
     .col-description { width:420px; }
 }
+
+.notice { margin: 10px 0; padding: 10px 12px; border-radius: 8px; font-weight: 700; }
+.notice.success { background:#ecfdf3; color:#067647; border:1px solid #abefc6; }
+.notice.warn { background:#fffaeb; color:#b54708; border:1px solid #fedf89; }
