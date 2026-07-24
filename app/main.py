@@ -269,7 +269,7 @@ def item_is_labor(item: QboItem | None, fallback_name: str | None = None) -> boo
     return is_labor_item_name(fallback_name or (item.fully_qualified_name if item else None) or (item.name if item else None))
 
 
-def calculate_sph_from_submitted_quote_form(form, quote: Quote) -> dict[str, Decimal]:
+def calculate_sph_from_submitted_quote_form(db: Session, form, quote: Quote) -> dict[str, Decimal]:
     """Calculate SPH directly from the submitted worksheet values.
 
     This function intentionally does not rely on Save Locally or persisted quote
@@ -1057,7 +1057,7 @@ async def upload_estimate_to_qbo(quote_id: int, request: Request, db: Annotated[
 
     form = await request.form()
     try:
-        submitted_totals = calculate_sph_from_submitted_quote_form(form, quote)
+        submitted_totals = calculate_sph_from_submitted_quote_form(db, form, quote)
         submitted_lines = submitted_qbo_lines_from_quote_form(db, form, quote)
         response = await update_qbo_estimate_lines_and_sph(db, quote.qbo_estimate_id, submitted_lines, submitted_totals["sph"])
     except QboError as exc:
