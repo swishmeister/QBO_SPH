@@ -170,3 +170,9 @@ It updates these QuickBooks estimate fields:
 - `S.P.H` custom field
 
 It does **not** write the app's Cost column to QuickBooks estimate lines. Cost is internal to the SPH worksheet and is used only to calculate gross markup and SPH. Existing QBO line details such as tax/class refs are preserved when they exist on the latest QuickBooks line.
+
+### Product/Service auto-fill
+
+When a Product/Service is selected from the worksheet dropdown, the app now fills the line description, quantity, cost, rate, markup, and hidden QBO item id from the local item cache. Refresh the Item Price Manager after deploying so item descriptions and prices are cached from QuickBooks.
+
+New rows added inside the app will upload to the linked QuickBooks estimate as long as the Product/Service was selected from the cached dropdown. The app sends Product/Service, Description, Qty, Rate, Amount, and S.P.H. The Cost column remains internal to this app.

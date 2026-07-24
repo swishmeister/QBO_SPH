@@ -556,3 +556,9 @@ table.estimate-sheet tbody tr.variable-cost-row { background:#ffe4ef !important;
     .variable-hint { font-size:12px; margin-top:4px; }
     .variable-cost-row .cost-input:not([readonly]) { border-color:#db2777 !important; box-shadow:0 0 0 2px rgba(219,39,119,.12); }
 }
+
+/* Item auto-fill controls */
+.item-tags { display:inline-block; margin-top:2px; }
+.product-input:focus { outline:2px solid rgba(37,99,235,.22); outline-offset:-2px; }
+.cell-input[readonly] { background:#f3f4f6 !important; color:#667085; cursor:not-allowed; }
+.variable-cost-row .cost-input:not([readonly]) { background:#fff !important; outline:1px solid #f472b6; outline-offset:-1px; }

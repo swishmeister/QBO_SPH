@@ -51,6 +51,7 @@ def _run_lightweight_migrations() -> None:
         "qbo_items": {
             "sync_token": "VARCHAR(64)",
             "sku": "VARCHAR(255)",
+            "sales_description": "TEXT",
             "original_unit_price": "NUMERIC(12, 2) DEFAULT 0",
             "original_purchase_cost": "NUMERIC(12, 2) DEFAULT 0",
             "qty_on_hand": "NUMERIC(12, 2)",
@@ -300,8 +301,9 @@ def calculate_sph_from_submitted_quote_form(form, quote: Quote) -> dict[str, Dec
             # Description-only/header rows do not affect totals or SPH.
             continue
 
-        labor_item = is_labor_item_name(product_service or line.qbo_item_name or line.product_service_name or description)
-        variable_item = line.is_variable_cost or is_variable_cost_item_name(product_service or line.qbo_item_name or line.product_service_name or description)
+        submitted_item = find_cached_item(db, str(form.get(prefix + "qbo_item_id") or "").strip()) or find_item_by_name(db, product_service)
+        labor_item = item_is_labor(submitted_item, product_service or line.qbo_item_name or line.product_service_name or description)
+        variable_item = item_is_variable(submitted_item, product_service or line.qbo_item_name or line.product_service_name or description) or line.is_variable_cost
 
         if labor_item:
             # LC:* lines supply quoted hours and labor rate. They do not create
@@ -381,12 +383,19 @@ def submitted_qbo_lines_from_quote_form(db: Session, form, quote: Quote) -> list
                 )
             continue
 
-        matched = find_item_by_name(db, product_service)
+        submitted_item_id = str(form.get(prefix + "qbo_item_id") or "").strip()
+        submitted_item_name = str(form.get(prefix + "qbo_item_name") or "").strip()
+        matched = find_cached_item(db, submitted_item_id) or find_item_by_name(db, product_service)
         qbo_item_id = line.qbo_item_id
         qbo_item_name = line.qbo_item_name or line.product_service_name or product_service
         if matched:
             qbo_item_id = matched.qbo_id
             qbo_item_name = matched.fully_qualified_name or matched.name
+        elif submitted_item_id:
+            raise QboError(
+                f"Product/Service '{submitted_item_name or product_service or submitted_item_id}' is not in the local item cache. "
+                "Refresh the Item Price Manager, choose the Product/Service again, then upload again."
+            )
         elif product_service:
             current_names = {str(value or "").strip() for value in [line.product_service_name, line.qbo_item_name] if str(value or "").strip()}
             if qbo_item_id and (not current_names or product_service in current_names):
@@ -402,8 +411,8 @@ def submitted_qbo_lines_from_quote_form(db: Session, form, quote: Quote) -> list
         if not qbo_item_id:
             raise QboError(f"Line '{description or product_service or line.id}' has no QuickBooks Product/Service selected.")
 
-        labor_item = is_labor_item_name(product_service or line.qbo_item_name or line.product_service_name or description)
-        variable_item = line.is_variable_cost or is_variable_cost_item_name(product_service or line.qbo_item_name or line.product_service_name or description)
+        labor_item = item_is_labor(matched, product_service or line.qbo_item_name or line.product_service_name or description)
+        variable_item = item_is_variable(matched, product_service or line.qbo_item_name or line.product_service_name or description) or line.is_variable_cost
 
         rate = submitted_rate
         if labor_item:
@@ -468,6 +477,7 @@ def upsert_qbo_item(db: Session, item: dict, *, keep_local_edits: bool = False) 
     record.name = item.get("Name", record.name)
     record.fully_qualified_name = item.get("FullyQualifiedName")
     record.sku = item.get("Sku") or item.get("SKU")
+    record.sales_description = item.get("Description") or item.get("SalesDescription") or item.get("PurchaseDesc")
     record.item_type = item.get("Type")
     record.active = item.get("Active", True)
     record.qty_on_hand = decimal_from_qbo(item.get("QtyOnHand"), "0.00") if item.get("QtyOnHand") is not None else None
@@ -876,7 +886,23 @@ def quote_detail(request: Request, quote_id: int, db: Annotated[Session, Depends
     db.commit()
     db.refresh(quote)
     items = db.scalars(select(QboItem).where(QboItem.active == True).order_by(QboItem.fully_qualified_name, QboItem.name)).all()  # noqa: E712
-    return templates.TemplateResponse("quote_detail.html", {"request": request, "quote": quote, "totals": quote_totals(quote), "items": items, "qbo": get_qbo_status(db)})
+    item_lookup = []
+    for item in items:
+        display_name = item.fully_qualified_name or item.name
+        item_lookup.append(
+            {
+                "id": item.qbo_id,
+                "name": item.name,
+                "display_name": display_name,
+                "fully_qualified_name": item.fully_qualified_name or "",
+                "description": item.sales_description or "",
+                "unit_price": str(item.unit_price or Decimal("0.00")),
+                "purchase_cost": str(item.purchase_cost or Decimal("0.00")),
+                "variable_cost": bool(item.variable_cost or is_variable_cost_item_name(display_name)),
+                "labor": bool(is_labor_item_name(display_name)),
+            }
+        )
+    return templates.TemplateResponse("quote_detail.html", {"request": request, "quote": quote, "totals": quote_totals(quote), "items": items, "item_lookup": item_lookup, "qbo": get_qbo_status(db)})
 
 
 @app.post("/quotes/{quote_id}/save")
@@ -911,15 +937,16 @@ async def save_quote_sheet(quote_id: int, request: Request, db: Annotated[Sessio
             line.quantity = quantity
             line.unit_cost = unit_cost
 
-            matched = find_item_by_name(db, product_service)
+            submitted_item_id = str(form.get(prefix + "qbo_item_id") or "").strip()
+            matched = find_cached_item(db, submitted_item_id) or find_item_by_name(db, product_service)
             if matched:
                 line.qbo_item_id = matched.qbo_id
                 line.qbo_item_name = matched.fully_qualified_name or matched.name
-                line.is_variable_cost = matched.variable_cost
+                line.is_variable_cost = item_is_variable(matched, product_service)
             else:
                 line.is_variable_cost = is_variable_cost_item_name(product_service or line.qbo_item_name)
 
-            labor_item = is_labor_item_name(product_service or line.qbo_item_name)
+            labor_item = item_is_labor(matched, product_service or line.qbo_item_name)
             empty_numeric = quantity == 0 and unit_cost == 0 and submitted_rate == 0 and submitted_markup_raw in (None, "")
             line.is_section_header = product_service == "" and empty_numeric
 

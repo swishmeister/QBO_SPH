@@ -38,6 +38,7 @@ class QboItem(Base):
     name: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
     fully_qualified_name: Mapped[str | None] = mapped_column(String(500), nullable=True)
     sku: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    sales_description: Mapped[str | None] = mapped_column(Text, nullable=True)
     item_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"))
     purchase_cost: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"))

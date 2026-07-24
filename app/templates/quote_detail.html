@@ -62,8 +62,10 @@
                 <tr id="line-{{ line.id }}" class="sheet-row {% if line.is_section_header %}section-row{% endif %} {% if line.is_variable_cost %}variable-cost-row{% endif %} {% if line.line_type == 'Labor' %}labor-row{% endif %}" data-line-id="{{ line.id }}" data-variable-cost="{{ '1' if line.is_variable_cost else '0' }}">
                     <td data-label="Product/Service">
                         <input class="line-calc-source" type="hidden" name="line_{{ line.id }}_calc_source" value="">
-                        <input class="cell-input product-input" name="line_{{ line.id }}_product_service" list="qbo-item-list" value="{{ line.product_service_name or line.qbo_item_name or '' }}" placeholder="Product/Service">
-                        {% if line.is_variable_cost %}<span class="mini-tag variable-tag">Variable cost</span><small class="variable-hint">Add purchase price to Cost column.</small>{% endif %}{% if line.line_type == 'Labor' %}<span class="mini-tag labor-tag">Labor</span>{% endif %}
+                        <input class="line-qbo-item-id" type="hidden" name="line_{{ line.id }}_qbo_item_id" value="{{ line.qbo_item_id or '' }}">
+                        <input class="line-qbo-item-name" type="hidden" name="line_{{ line.id }}_qbo_item_name" value="{{ line.qbo_item_name or line.product_service_name or '' }}">
+                        <input class="cell-input product-input" name="line_{{ line.id }}_product_service" list="qbo-item-list" value="{{ line.product_service_name or line.qbo_item_name or '' }}" placeholder="Product/Service" autocomplete="off">
+                        <span class="item-tags">{% if line.is_variable_cost %}<span class="mini-tag variable-tag">Variable cost</span><small class="variable-hint">Add purchase price to Cost column.</small>{% endif %}{% if line.line_type == 'Labor' %}<span class="mini-tag labor-tag">Labor</span>{% endif %}</span>
                     </td>
                     <td data-label="Description"><input class="cell-input description-input" name="line_{{ line.id }}_description" value="{{ line.description }}" placeholder="Description"></td>
                     <td data-label="Qty"><input class="cell-input num qty-input" name="line_{{ line.id }}_quantity" type="number" step="0.01" value="{{ line.quantity if not line.is_section_header else '' }}"></td>
@@ -86,7 +88,7 @@
 
 <datalist id="qbo-item-list">
 {% for item in items %}
-    <option value="{{ item.fully_qualified_name or item.name }}"></option>
+    <option value="{{ item.fully_qualified_name or item.name }}" label="{{ item.name }}"></option>
 {% endfor %}
 </datalist>
 
@@ -103,11 +105,68 @@
 
 <script>
 (function(){
+    const qboItems = {{ item_lookup|tojson }};
+    const qboItemByName = new Map();
+    qboItems.forEach(item => {
+        [item.display_name, item.fully_qualified_name, item.name].forEach(key => {
+            const cleaned = String(key || '').trim();
+            if (cleaned) qboItemByName.set(cleaned.toUpperCase(), item);
+        });
+    });
     const money = (n) => '$' + (Number.isFinite(n) ? n : 0).toFixed(2);
     const num = (value) => {
         const n = parseFloat(value);
         return Number.isFinite(n) ? n : 0;
     };
+    function lookupItem(value) {
+        const cleaned = String(value || '').trim().toUpperCase();
+        return cleaned ? qboItemByName.get(cleaned) : null;
+    }
+    function syncRowTags(row, item) {
+        const tagBox = row.querySelector('.item-tags');
+        if (!tagBox) return;
+        const tags = [];
+        if (item?.variable_cost) {
+            tags.push('<span class="mini-tag variable-tag">Variable cost</span><small class="variable-hint">Add purchase price to Cost column.</small>');
+        }
+        if (item?.labor) {
+            tags.push('<span class="mini-tag labor-tag">Labor</span>');
+        }
+        tagBox.innerHTML = tags.join('');
+    }
+    function applySelectedItemToRow(row, productValue) {
+        const item = lookupItem(productValue);
+        if (!item) return false;
+        const idEl = row.querySelector('.line-qbo-item-id');
+        const nameEl = row.querySelector('.line-qbo-item-name');
+        const descEl = row.querySelector('.description-input');
+        const qtyEl = row.querySelector('.qty-input');
+        const costEl = row.querySelector('.cost-input');
+        const rateEl = row.querySelector('.rate-input');
+        const markupEl = row.querySelector('.markup-input');
+
+        if (idEl) idEl.value = item.id || '';
+        if (nameEl) nameEl.value = item.display_name || item.name || '';
+        if (descEl) descEl.value = item.description || descEl.value || item.name || '';
+        if (qtyEl && (!qtyEl.value || num(qtyEl.value) === 0)) qtyEl.value = '1.00';
+
+        const rate = num(item.unit_price);
+        let cost = num(item.purchase_cost);
+        if (item.variable_cost || item.labor) cost = rate;
+        if (rateEl) rateEl.value = rate.toFixed(2);
+        if (costEl) {
+            costEl.value = cost.toFixed(2);
+            costEl.readOnly = !item.variable_cost;
+            costEl.title = item.variable_cost ? 'Enter actual purchase price for this variable-cost item' : 'Cost is editable only for MC/MI/MP/MM variable-cost items';
+        }
+        if (markupEl) markupEl.value = cost === 0 ? '' : (((rate - cost) / cost) * 100).toFixed(2);
+
+        row.dataset.variableCost = item.variable_cost ? '1' : '0';
+        row.classList.toggle('variable-cost-row', !!item.variable_cost);
+        row.classList.toggle('labor-row', !!item.labor);
+        syncRowTags(row, item);
+        return true;
+    }
     function isVariableCodeName(value) {
         const codes = new Set(['MC', 'MI', 'MP', 'MM']);
         const text = String(value || '').trim().toUpperCase();
@@ -156,7 +215,7 @@
         } else if (sourceClass === 'markup-input' || sourceClass === 'cost-input') {
             rate = cost * (1 + markup / 100);
             rateEl.value = rate.toFixed(2);
-        } else if (sourceClass === 'rate-input') {
+        } else if (sourceClass === 'rate-input' || sourceClass === 'item-select') {
             markup = cost === 0 ? 0 : ((rate - cost) / cost) * 100;
             markupEl.value = cost === 0 ? '' : markup.toFixed(2);
         }
@@ -186,7 +245,15 @@
         document.getElementById('sph-value').textContent = money(sph) + '/hr';
     }
     document.addEventListener('input', function(e){
-        if (e.target.matches('.qty-input,.cost-input,.markup-input,.rate-input,.product-input,#quoted-labor-hours,#hourly-labor-rate')) {
+        if (e.target.matches('.product-input')) {
+            const row = e.target.closest('tr.sheet-row');
+            const applied = row ? applySelectedItemToRow(row, e.target.value) : false;
+            const sourceInput = row?.querySelector('.line-calc-source');
+            if (sourceInput && applied) sourceInput.value = 'item-select';
+            updateTotals(applied ? 'item-select' : '');
+            return;
+        }
+        if (e.target.matches('.qty-input,.cost-input,.markup-input,.rate-input,#quoted-labor-hours,#hourly-labor-rate')) {
             const source = e.target.classList.contains('cost-input') ? 'cost-input' : e.target.classList.contains('markup-input') ? 'markup-input' : e.target.classList.contains('rate-input') ? 'rate-input' : '';
             const row = e.target.closest('tr.sheet-row');
             if (row) {
@@ -194,6 +261,15 @@
                 if (sourceInput && source) sourceInput.value = source;
             }
             updateTotals(source);
+        }
+    });
+    document.addEventListener('change', function(e){
+        if (e.target.matches('.product-input')) {
+            const row = e.target.closest('tr.sheet-row');
+            const applied = row ? applySelectedItemToRow(row, e.target.value) : false;
+            const sourceInput = row?.querySelector('.line-calc-source');
+            if (sourceInput && applied) sourceInput.value = 'item-select';
+            updateTotals(applied ? 'item-select' : '');
         }
     });
     const form = document.getElementById('quote-sheet-form');
