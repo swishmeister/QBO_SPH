@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>SPH Calculator and File Editor</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260724-app-activity-home-cleanup">
+    <link rel="stylesheet" href="/static/styles.css?v=20260724-top-status-settings">
 </head>
 <body>
 <header class="topbar streamlined-topbar">
@@ -14,6 +14,58 @@
             <a href="/estimates">Estimate Library</a>
             <a href="/items">Item Price Manager</a>
         </nav>
+    </div>
+
+    <div class="topbar-right">
+        <div class="qbo-status status-pills" aria-label="QuickBooks status">
+            <span class="badge">{{ qbo.env|capitalize }}</span>
+            {% if qbo.connected %}
+                <span class="badge good">QBO Connected</span>
+            {% else %}
+                <span class="badge warn">QBO Not Connected</span>
+            {% endif %}
+            {% if qbo.read_only %}
+                <span class="badge warn">Read-only</span>
+            {% else %}
+                <span class="badge good">Write enabled</span>
+            {% endif %}
+        </div>
+
+        <details class="settings-menu">
+            <summary class="settings-trigger" aria-label="Settings" title="Settings">⚙</summary>
+            <div class="settings-dropdown">
+                <div class="settings-menu-header">
+                    <strong>Settings</strong>
+                    <span class="subtle">QuickBooks connection</span>
+                </div>
+
+                <div class="settings-status-block">
+                    {% if qbo.connected %}
+                        <span class="badge good">Connected</span>
+                        <p>{{ qbo.company_name or ('Realm ' ~ qbo.realm_id) }}</p>
+                    {% else %}
+                        <span class="badge warn">Not connected</span>
+                        <p>Connect before importing or updating QuickBooks data.</p>
+                    {% endif %}
+                    {% if qbo.read_only %}
+                        <span class="badge warn">Read-only mode</span>
+                    {% else %}
+                        <span class="badge good">Write enabled</span>
+                    {% endif %}
+                </div>
+
+                <div class="settings-actions">
+                    {% if qbo.connected %}
+                        <a class="settings-action" href="/qbo/connect">Reconnect QuickBooks</a>
+                        <form method="post" action="/qbo/disconnect">
+                            <button class="settings-action danger" type="submit">Disconnect QuickBooks</button>
+                        </form>
+                    {% else %}
+                        <a class="settings-action primary" href="/qbo/connect">Connect QuickBooks</a>
+                    {% endif %}
+                </div>
+            </div>
+        </details>
     </div>
 </header>
 <main class="container">
