@@ -1,0 +1,21 @@
+BILLABLE EXPENSE CLEANUP DEPLOYMENT
+
+New files:
+- app/billable_expense_cleanup.py
+- app/templates/billable_expense_cleanup.html
+
+Modified files:
+- app/main.py
+- app/templates/base.html
+- app/templates/dashboard.html
+- README.md
+
+Render deployment:
+1. Replace/add the files above in the GitHub repository connected to Render.
+2. Commit and push to the deployed branch.
+3. Keep QBO_READ_ONLY=true for the first deployment.
+4. Open /billable-expenses and test scanning plus CSV backup.
+5. Set QBO_READ_ONLY=false and redeploy only when ready to update one known test line.
+6. Run a new scan after each update pass to verify the current QBO statuses.
+
+The feature creates its two database tables automatically with checkfirst=True.

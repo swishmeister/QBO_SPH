@@ -1,0 +1,632 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  .be-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; }
+  .be-grid.two { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .be-field { display:flex; flex-direction:column; gap:5px; }
+  .be-field input, .be-field select { width:100%; }
+  .be-checkbox-group { display:flex; flex-wrap:wrap; gap:12px; align-items:center; min-height:39px; }
+  .be-toolbar { display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
+  .be-summary { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:10px; margin:14px 0; }
+  .be-stat { border:1px solid #dfe4ea; border-radius:10px; background:#fff; padding:10px; }
+  .be-stat span { display:block; color:#667085; font-size:.82rem; }
+  .be-stat strong { display:block; margin-top:3px; font-size:1.2rem; }
+  .be-table-wrap { width:100%; overflow:auto; border:1px solid #dfe4ea; border-radius:10px; }
+  .be-table { width:100%; min-width:1450px; border-collapse:collapse; }
+  .be-table th, .be-table td { padding:8px 10px; border-bottom:1px solid #e7ebef; text-align:left; vertical-align:top; }
+  .be-table tr.be-protected { background:#fff6f2; }
+  .be-table tr.be-updated { opacity:.62; }
+  .be-description { max-width:340px; white-space:normal; }
+  .be-checkbox { width:18px; height:18px; }
+  .be-pager { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-top:10px; }
+  .be-update-panel { border:1px solid #e5b75c; background:#fffbf2; }
+  .be-confirm { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-weight:700; }
+  .be-progress { width:100%; height:16px; }
+  .be-log { max-height:280px; overflow:auto; border:1px solid #dfe4ea; border-radius:10px; background:#fff; padding:8px; }
+  .be-log-row { display:grid; grid-template-columns:135px 1fr; gap:10px; padding:5px 3px; border-bottom:1px solid #eef1f4; font-size:.88rem; }
+  .be-log-row:last-child { border-bottom:0; }
+  .be-hidden { display:none !important; }
+  .be-result-pill { display:inline-block; border-radius:999px; padding:2px 8px; font-size:.78rem; font-weight:700; background:#eef2f6; }
+  .be-result-pill.updated { background:#e8f5e9; color:#137333; }
+  .be-result-pill.failed { background:#fdecec; color:#9c2f22; }
+  .be-result-pill.protected { background:#fff0e8; color:#9c4a17; }
+  .be-money { white-space:nowrap; text-align:right; }
+  @media (max-width: 1100px) {
+    .be-grid, .be-grid.two, .be-summary { grid-template-columns:1fr 1fr; }
+  }
+  @media (max-width: 640px) {
+    .be-grid, .be-grid.two, .be-summary { grid-template-columns:1fr; }
+  }
+</style>
+
+<section class="card">
+  <div class="section-title-row">
+    <div>
+      <h1>Billable Expense Cleanup</h1>
+      <p class="subtle">Find billable expense lines on QuickBooks bills, checks, credit-card expenses, and expenses, then mark selected lines NotBillable without deleting the source transactions.</p>
+    </div>
+    {% if qbo.read_only %}<span class="badge warn">Updates disabled: read-only mode</span>{% endif %}
+  </div>
+
+  <div class="notice warn">
+    This changes the billable setting on individual expense lines. It does not delete the bill or expense and does not alter the line amount or accounting account.
+    Lines marked <strong>HasBeenBilled</strong> are view-only and protected. Scans expire after {{ scan_ttl_minutes }} minutes.
+  </div>
+
+  <form id="scan-form">
+    <div class="be-grid">
+      <div class="be-field">
+        <label for="start-date">Start date</label>
+        <input id="start-date" type="date">
+      </div>
+      <div class="be-field">
+        <label for="end-date">End date</label>
+        <input id="end-date" type="date">
+      </div>
+      <div class="be-field">
+        <label for="billable-status">Billable status</label>
+        <select id="billable-status">
+          <option value="Billable" selected>Billable only</option>
+          <option value="HasBeenBilled">Has been billed (view only)</option>
+          <option value="all">Billable and billed</option>
+        </select>
+      </div>
+      <div class="be-field">
+        <label>Transaction types</label>
+        <div class="be-checkbox-group">
+          <label><input class="transaction-type" type="checkbox" value="Purchase" checked> Expenses/checks/cards</label>
+          <label><input class="transaction-type" type="checkbox" value="Bill" checked> Bills</label>
+          <label><input class="transaction-type" type="checkbox" value="VendorCredit"> Vendor credits</label>
+        </div>
+      </div>
+      <div class="be-field">
+        <label for="customer-text">Customer/job contains</label>
+        <input id="customer-text" type="text" maxlength="250" placeholder="Optional">
+      </div>
+      <div class="be-field">
+        <label for="vendor-text">Vendor/payee contains</label>
+        <input id="vendor-text" type="text" maxlength="250" placeholder="Optional">
+      </div>
+      <div class="be-field">
+        <label for="account-item-text">Account/item contains</label>
+        <input id="account-item-text" type="text" maxlength="250" placeholder="Optional">
+      </div>
+      <div class="be-field">
+        <label for="description-text">Description contains</label>
+        <input id="description-text" type="text" maxlength="500" placeholder="Optional">
+      </div>
+      <div class="be-field">
+        <label for="min-amount">Minimum line amount</label>
+        <input id="min-amount" type="number" step="0.01" min="0" placeholder="Optional">
+      </div>
+      <div class="be-field">
+        <label for="max-amount">Maximum line amount</label>
+        <input id="max-amount" type="number" step="0.01" min="0" placeholder="Optional">
+      </div>
+      <div class="be-field">
+        <label>&nbsp;</label>
+        <label><input id="customer-required" type="checkbox" checked> Only lines assigned to a customer/job</label>
+      </div>
+    </div>
+    <div class="be-toolbar" style="margin-top:14px;">
+      <button id="scan-button" class="button primary" type="submit">Scan QuickBooks</button>
+      <span id="scan-status" class="subtle"></span>
+    </div>
+  </form>
+</section>
+
+<section id="results-section" class="card be-hidden">
+  <div class="section-title-row">
+    <div>
+      <h2>Scan results</h2>
+      <p id="scan-expiry" class="subtle"></p>
+    </div>
+    <div class="be-toolbar">
+      <button id="select-safe-button" class="button" type="button">Select all Billable lines</button>
+      <button id="clear-selection-button" class="button" type="button">Clear selection</button>
+    </div>
+  </div>
+
+  <div class="be-summary">
+    <div class="be-stat"><span>Lines found</span><strong id="count-total">0</strong></div>
+    <div class="be-stat"><span>Transactions</span><strong id="count-transactions">0</strong></div>
+    <div class="be-stat"><span>Safe Billable</span><strong id="count-safe">0</strong></div>
+    <div class="be-stat"><span>Selected</span><strong id="count-selected">0</strong></div>
+    <div class="be-stat"><span>Selected amount</span><strong id="count-selected-amount">$0.00</strong></div>
+    <div class="be-stat"><span>Protected billed</span><strong id="count-protected">0</strong></div>
+  </div>
+
+  <div id="truncated-warning" class="notice warn be-hidden"></div>
+
+  <div class="be-table-wrap">
+    <table class="be-table">
+      <thead>
+        <tr>
+          <th><input id="select-page" class="be-checkbox" type="checkbox" aria-label="Select Billable lines on this page"></th>
+          <th>Date</th>
+          <th>Type</th>
+          <th>Vendor/payee</th>
+          <th>Customer/job</th>
+          <th>Account/item</th>
+          <th>Amount</th>
+          <th>Status</th>
+          <th>Description</th>
+          <th>Document #</th>
+          <th>QBO transaction / line</th>
+          <th>Result</th>
+        </tr>
+      </thead>
+      <tbody id="results-body"></tbody>
+    </table>
+  </div>
+  <div class="be-pager">
+    <button id="previous-page" class="button" type="button">Previous</button>
+    <span id="page-label" class="subtle"></span>
+    <button id="next-page" class="button" type="button">Next</button>
+  </div>
+</section>
+
+<section id="backup-section" class="card be-hidden">
+  <h2>1. Download the backup</h2>
+  <p>The CSV records every selected line and includes the complete original QuickBooks transaction JSON. A fresh backup is required whenever the selection changes.</p>
+  <div class="be-toolbar">
+    <button id="backup-button" class="button primary" type="button">Download selected backup CSV</button>
+    <span id="backup-status" class="subtle">A backup is required after every selection change.</span>
+  </div>
+</section>
+
+<section id="update-section" class="card be-update-panel be-hidden">
+  <h2>2. Confirm the update</h2>
+  <p>Type this exact phrase:</p>
+  <p id="confirmation-phrase" class="be-confirm"></p>
+  <div class="be-grid two">
+    <div class="be-field">
+      <label for="confirmation-input">Confirmation phrase</label>
+      <input id="confirmation-input" type="text" autocomplete="off">
+    </div>
+    <div class="be-field">
+      <label>&nbsp;</label>
+      <div class="be-toolbar">
+        <button id="update-button" class="button primary" type="button" disabled>Mark selected lines NotBillable</button>
+        <button id="stop-button" class="button be-hidden" type="button">Stop after current group</button>
+      </div>
+    </div>
+  </div>
+  <div id="update-progress-area" class="be-hidden" style="margin-top:16px;">
+    <progress id="update-progress" class="be-progress" max="100" value="0"></progress>
+    <p id="update-progress-text" class="subtle"></p>
+    <div id="update-log" class="be-log"></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="section-title-row">
+    <div>
+      <h2>Recent update log</h2>
+      <p class="subtle">The latest 50 line-level attempts recorded by this app.</p>
+    </div>
+    <a class="button" href="/billable-expenses">Refresh log</a>
+  </div>
+  {% if history %}
+  <div class="be-table-wrap" style="max-height:360px;">
+    <table class="be-table" style="min-width:1250px;">
+      <thead><tr><th>Time</th><th>Date</th><th>Type</th><th>Vendor/payee</th><th>Customer/job</th><th>Account/item</th><th>Amount</th><th>Transaction / line</th><th>Status</th><th>Message</th></tr></thead>
+      <tbody>
+      {% for row in history %}
+        <tr>
+          <td>{{ row.created_at }}</td>
+          <td>{{ row.txn_date or '—' }}</td>
+          <td>{{ row.entity_type }}</td>
+          <td>{{ row.vendor_name or '—' }}</td>
+          <td>{{ row.customer_name or '—' }}</td>
+          <td>{{ row.account_item_name or '—' }}</td>
+          <td>${{ '%.2f'|format(row.amount or 0) }}</td>
+          <td>{{ row.qbo_transaction_id }} / {{ row.qbo_line_id or 'index' }}</td>
+          <td><span class="be-result-pill {{ 'updated' if row.status in ['updated', 'already_not_billable', 'updated_unverified'] else ('protected' if row.status == 'protected' else 'failed') }}">{{ row.status }}</span></td>
+          <td>{{ row.error_message or '—' }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    <p>No billable-expense updates have been logged yet.</p>
+  {% endif %}
+</section>
+
+<script>
+(() => {
+  const csrfToken = {{ csrf_token|tojson }};
+  const qboReadOnly = {{ qbo.read_only|tojson }};
+  const pageSize = 100;
+  const transactionLimit = {{ update_transaction_limit }};
+
+  const state = {
+    scanId: null,
+    expiresAt: null,
+    records: [],
+    counts: {},
+    selected: new Set(),
+    backedUpSelectionKey: null,
+    page: 1,
+    updating: false,
+    stopRequested: false,
+  };
+
+  const el = (id) => document.getElementById(id);
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const money = (value) => new Intl.NumberFormat('en-US', {style:'currency', currency:'USD'}).format(Number(value || 0));
+
+  function selectionKey() {
+    return [...state.selected].sort().join(',');
+  }
+
+  function selectedRecords() {
+    return state.records.filter((record) => state.selected.has(record.id));
+  }
+
+  function recordUnavailable(record) {
+    return !record.selectable || ['updated', 'already_not_billable', 'protected', 'changed_since_scan', 'already_missing'].includes(record.resultStatus);
+  }
+
+  function safeRecords() {
+    return state.records.filter((record) => !recordUnavailable(record));
+  }
+
+  function markSelectionChanged() {
+    state.backedUpSelectionKey = null;
+    el('backup-status').textContent = 'A backup is required after every selection change.';
+    el('backup-status').className = 'subtle';
+    updateSelectionUi();
+  }
+
+  function updateSelectionUi() {
+    const selected = selectedRecords();
+    const selectedAmount = selected.reduce((sum, record) => sum + Number(record.amount || 0), 0);
+    el('count-selected').textContent = selected.length;
+    el('count-selected-amount').textContent = money(selectedAmount);
+    el('backup-section').classList.toggle('be-hidden', selected.length === 0);
+    el('update-section').classList.toggle('be-hidden', selected.length === 0);
+
+    const phrase = `MARK ${selected.length} EXPENSE CHARGES NOT BILLABLE`;
+    el('confirmation-phrase').textContent = phrase;
+    const backupCurrent = state.backedUpSelectionKey === selectionKey() && selected.length > 0;
+    el('update-button').disabled = qboReadOnly || state.updating || !backupCurrent || el('confirmation-input').value !== phrase;
+
+    const pageRecords = currentPageRecords().filter((record) => !recordUnavailable(record));
+    el('select-page').checked = pageRecords.length > 0 && pageRecords.every((record) => state.selected.has(record.id));
+    el('select-page').indeterminate = pageRecords.some((record) => state.selected.has(record.id)) && !el('select-page').checked;
+  }
+
+  function currentPageRecords() {
+    const start = (state.page - 1) * pageSize;
+    return state.records.slice(start, start + pageSize);
+  }
+
+  function resultClass(status) {
+    if (['updated', 'already_not_billable', 'updated_unverified'].includes(status)) return 'updated';
+    if (status === 'protected') return 'protected';
+    if (status) return 'failed';
+    return '';
+  }
+
+  function renderTable() {
+    const body = el('results-body');
+    body.textContent = '';
+    for (const record of currentPageRecords()) {
+      const row = document.createElement('tr');
+      if (record.protected) row.classList.add('be-protected');
+      if (['updated', 'already_not_billable'].includes(record.resultStatus)) row.classList.add('be-updated');
+
+      const checkboxCell = document.createElement('td');
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.className = 'be-checkbox';
+      checkbox.checked = state.selected.has(record.id);
+      checkbox.disabled = recordUnavailable(record) || state.updating;
+      checkbox.addEventListener('change', () => {
+        if (checkbox.checked) state.selected.add(record.id); else state.selected.delete(record.id);
+        markSelectionChanged();
+      });
+      checkboxCell.appendChild(checkbox);
+      row.appendChild(checkboxCell);
+
+      const values = [
+        record.txn_date || '—',
+        record.transaction_type || record.entity_type,
+        record.vendor_name || '—',
+        record.customer_name || '—',
+        record.account_item_name || '—',
+      ];
+      for (const value of values) {
+        const cell = document.createElement('td');
+        cell.textContent = value;
+        row.appendChild(cell);
+      }
+
+      const amountCell = document.createElement('td');
+      amountCell.className = 'be-money';
+      amountCell.textContent = money(record.amount);
+      row.appendChild(amountCell);
+
+      const statusCell = document.createElement('td');
+      statusCell.textContent = record.billable_status;
+      row.appendChild(statusCell);
+
+      const descriptionCell = document.createElement('td');
+      descriptionCell.className = 'be-description';
+      descriptionCell.textContent = record.description || '—';
+      row.appendChild(descriptionCell);
+
+      const docCell = document.createElement('td');
+      docCell.textContent = record.doc_number || '—';
+      row.appendChild(docCell);
+
+      const idCell = document.createElement('td');
+      idCell.textContent = `${record.transaction_id} / ${record.line_id || `index ${record.line_index}`}`;
+      row.appendChild(idCell);
+
+      const resultCell = document.createElement('td');
+      if (record.resultStatus) {
+        const pill = document.createElement('span');
+        pill.className = `be-result-pill ${resultClass(record.resultStatus)}`;
+        pill.textContent = record.resultStatus;
+        pill.title = record.resultMessage || '';
+        resultCell.appendChild(pill);
+      } else {
+        resultCell.textContent = '—';
+      }
+      row.appendChild(resultCell);
+      body.appendChild(row);
+    }
+
+    const pageCount = Math.max(1, Math.ceil(state.records.length / pageSize));
+    el('page-label').textContent = `Page ${state.page} of ${pageCount}`;
+    el('previous-page').disabled = state.page <= 1;
+    el('next-page').disabled = state.page >= pageCount;
+    updateSelectionUi();
+  }
+
+  async function apiJson(url, payload) {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    let data = {};
+    try { data = await response.json(); } catch (_) {}
+    if (!response.ok) throw new Error(data.detail || `Request failed with status ${response.status}`);
+    return data;
+  }
+
+  function appendLog(label, message) {
+    const row = document.createElement('div');
+    row.className = 'be-log-row';
+    const labelCell = document.createElement('strong');
+    labelCell.textContent = label;
+    const messageCell = document.createElement('span');
+    messageCell.textContent = message;
+    row.append(labelCell, messageCell);
+    el('update-log').prepend(row);
+  }
+
+  function buildTransactionChunks(records) {
+    const groups = new Map();
+    for (const record of records) {
+      if (!groups.has(record.transaction_key)) groups.set(record.transaction_key, []);
+      groups.get(record.transaction_key).push(record.id);
+    }
+    const chunks = [];
+    let current = [];
+    let transactionsInCurrent = 0;
+    for (const ids of groups.values()) {
+      if (transactionsInCurrent >= transactionLimit) {
+        chunks.push(current);
+        current = [];
+        transactionsInCurrent = 0;
+      }
+      current.push(...ids);
+      transactionsInCurrent += 1;
+    }
+    if (current.length) chunks.push(current);
+    return chunks;
+  }
+
+  el('scan-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const transactionTypes = [...document.querySelectorAll('.transaction-type:checked')].map((item) => item.value);
+    if (!transactionTypes.length) {
+      el('scan-status').textContent = 'Select at least one transaction type.';
+      return;
+    }
+
+    el('scan-button').disabled = true;
+    el('scan-status').textContent = 'Scanning QuickBooks transactions and expense lines…';
+    try {
+      const data = await apiJson('/billable-expenses/api/scan', {
+        start_date: el('start-date').value || null,
+        end_date: el('end-date').value || null,
+        transaction_types: transactionTypes,
+        billable_status: el('billable-status').value,
+        customer_required: el('customer-required').checked,
+        customer_text: el('customer-text').value,
+        vendor_text: el('vendor-text').value,
+        account_item_text: el('account-item-text').value,
+        description_text: el('description-text').value,
+        min_amount: el('min-amount').value || null,
+        max_amount: el('max-amount').value || null,
+      });
+      state.scanId = data.scan_id;
+      state.expiresAt = data.expires_at;
+      state.records = data.records || [];
+      state.counts = data.counts || {};
+      state.selected.clear();
+      state.backedUpSelectionKey = null;
+      state.page = 1;
+      el('confirmation-input').value = '';
+      el('count-total').textContent = state.counts.total || 0;
+      el('count-transactions').textContent = state.counts.transactions || 0;
+      el('count-safe').textContent = state.counts.safe || 0;
+      el('count-protected').textContent = state.counts.protected || 0;
+      el('scan-expiry').textContent = `Scan expires ${new Date(data.expires_at).toLocaleString()}. ${data.source_transactions_scanned} source transactions scanned.`;
+      el('truncated-warning').classList.toggle('be-hidden', !data.truncated);
+      if (data.truncated) {
+        el('truncated-warning').textContent = `The scan reached its safety limit. Narrow the date range or filters before updating all records.`;
+      }
+      el('results-section').classList.remove('be-hidden');
+      el('scan-status').textContent = `Found ${state.records.length} matching expense lines in ${state.counts.transactions || 0} transactions.`;
+      renderTable();
+    } catch (error) {
+      el('scan-status').textContent = error.message;
+    } finally {
+      el('scan-button').disabled = false;
+    }
+  });
+
+  el('select-safe-button').addEventListener('click', () => {
+    state.selected = new Set(safeRecords().map((record) => record.id));
+    markSelectionChanged();
+    renderTable();
+  });
+
+  el('clear-selection-button').addEventListener('click', () => {
+    state.selected.clear();
+    markSelectionChanged();
+    renderTable();
+  });
+
+  el('select-page').addEventListener('change', () => {
+    for (const record of currentPageRecords()) {
+      if (recordUnavailable(record)) continue;
+      if (el('select-page').checked) state.selected.add(record.id); else state.selected.delete(record.id);
+    }
+    markSelectionChanged();
+    renderTable();
+  });
+
+  el('previous-page').addEventListener('click', () => {
+    if (state.page > 1) { state.page -= 1; renderTable(); }
+  });
+  el('next-page').addEventListener('click', () => {
+    const pageCount = Math.max(1, Math.ceil(state.records.length / pageSize));
+    if (state.page < pageCount) { state.page += 1; renderTable(); }
+  });
+
+  el('confirmation-input').addEventListener('input', updateSelectionUi);
+
+  el('backup-button').addEventListener('click', async () => {
+    const ids = [...state.selected];
+    if (!ids.length) return;
+    el('backup-button').disabled = true;
+    el('backup-status').textContent = 'Preparing CSV backup…';
+    try {
+      const response = await fetch('/billable-expenses/api/export', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({scan_id: state.scanId, ids, csrf_token: csrfToken}),
+      });
+      if (!response.ok) {
+        let data = {};
+        try { data = await response.json(); } catch (_) {}
+        throw new Error(data.detail || `Backup failed with status ${response.status}`);
+      }
+      const blob = await response.blob();
+      const disposition = response.headers.get('Content-Disposition') || '';
+      const match = disposition.match(/filename="([^"]+)"/);
+      const filename = match ? match[1] : 'qbo-billable-expense-backup.csv';
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      state.backedUpSelectionKey = selectionKey();
+      el('backup-status').textContent = `Backup downloaded for ${ids.length} selected lines.`;
+      el('backup-status').className = 'subtle';
+      updateSelectionUi();
+    } catch (error) {
+      el('backup-status').textContent = error.message;
+      state.backedUpSelectionKey = null;
+      updateSelectionUi();
+    } finally {
+      el('backup-button').disabled = false;
+    }
+  });
+
+  el('stop-button').addEventListener('click', () => {
+    state.stopRequested = true;
+    el('stop-button').disabled = true;
+    appendLog('Stop requested', 'The current transaction group will finish, then processing will stop.');
+  });
+
+  el('update-button').addEventListener('click', async () => {
+    const records = selectedRecords().filter((record) => !recordUnavailable(record));
+    const expectedTotal = records.length;
+    const phrase = `MARK ${expectedTotal} EXPENSE CHARGES NOT BILLABLE`;
+    if (!expectedTotal || el('confirmation-input').value !== phrase || state.backedUpSelectionKey !== selectionKey()) return;
+
+    state.updating = true;
+    state.stopRequested = false;
+    el('stop-button').classList.remove('be-hidden');
+    el('stop-button').disabled = false;
+    el('update-progress-area').classList.remove('be-hidden');
+    el('update-log').textContent = '';
+    updateSelectionUi();
+
+    const chunks = buildTransactionChunks(records);
+    let completed = 0;
+    try {
+      for (let index = 0; index < chunks.length; index += 1) {
+        if (state.stopRequested) break;
+        const chunk = chunks[index];
+        el('update-progress-text').textContent = `Updating transaction group ${index + 1} of ${chunks.length}…`;
+        try {
+          const data = await apiJson('/billable-expenses/api/update-chunk', {
+            scan_id: state.scanId,
+            ids: chunk,
+            expected_total: expectedTotal,
+            confirmation: phrase,
+            csrf_token: csrfToken,
+          });
+          for (const result of data.results || []) {
+            const record = state.records.find((item) => item.id === result.id);
+            if (record) {
+              record.resultStatus = result.status;
+              record.resultMessage = result.message;
+              if (['updated', 'already_not_billable'].includes(result.status)) {
+                record.billable_status = 'NotBillable';
+                record.selectable = false;
+                state.selected.delete(record.id);
+              }
+              if (['protected', 'changed_since_scan', 'already_missing', 'line_missing', 'status_changed'].includes(result.status)) {
+                state.selected.delete(record.id);
+              }
+            }
+            appendLog(result.status, `${result.id}: ${result.message}`);
+          }
+        } catch (error) {
+          appendLog('Group failed', error.message);
+        }
+        completed += chunk.length;
+        el('update-progress').value = Math.min(100, (completed / expectedTotal) * 100);
+        renderTable();
+        if (index < chunks.length - 1 && !state.stopRequested) await sleep(1700);
+      }
+    } finally {
+      state.updating = false;
+      el('stop-button').classList.add('be-hidden');
+      state.backedUpSelectionKey = null;
+      el('backup-status').textContent = 'Run a new scan before making additional updates.';
+      el('confirmation-input').value = '';
+      el('update-progress-text').textContent = state.stopRequested
+        ? 'Stopped after the current transaction group. Run a new scan before continuing.'
+        : 'Update pass finished. Run a new scan to verify all statuses.';
+      updateSelectionUi();
+      renderTable();
+    }
+  });
+})();
+</script>
+{% endblock %}

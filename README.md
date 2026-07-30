@@ -210,3 +210,16 @@ QBO_READ_ONLY=false
 ```
 
 Render must redeploy after the environment-variable change before permanent deletion is enabled.
+
+## Billable Expense Cleanup
+
+The application includes `/billable-expenses` for migrated customer/job expense lines that were incorrectly left billable.
+
+- Scans QBO `Purchase`, `Bill`, and optional `VendorCredit` transactions.
+- Identifies `AccountBasedExpenseLineDetail` and `ItemBasedExpenseLineDetail` lines with a customer/project and billable status.
+- Exports selected lines and their complete original transaction JSON to CSV before any write.
+- Re-reads the latest source transactions and refuses stale or already-billed lines.
+- Changes selected `BillableStatus` values from `Billable` to `NotBillable` without deleting or changing the transaction amounts.
+- Preserves all other transaction lines and records each line-level result in an audit table.
+
+Keep `QBO_READ_ONLY=true` while testing scans and backups. Set it to `false` only when ready to perform updates.
