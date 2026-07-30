@@ -1,0 +1,563 @@
+{% extends "base.html" %}
+
+{% block content %}
+<style>
+  .tc-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; }
+  .tc-grid.two { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .tc-field { display:flex; flex-direction:column; gap:6px; }
+  .tc-field label { font-weight:700; font-size:.9rem; }
+  .tc-field input, .tc-field select { width:100%; }
+  .tc-toolbar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .tc-summary { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:10px; margin:14px 0; }
+  .tc-stat { padding:12px; border:1px solid #dfe4ea; border-radius:10px; background:#fff; }
+  .tc-stat strong { display:block; font-size:1.35rem; }
+  .tc-table-wrap { overflow:auto; max-height:62vh; border:1px solid #dfe4ea; border-radius:10px; }
+  .tc-table { width:100%; border-collapse:collapse; min-width:1220px; }
+  .tc-table th { position:sticky; top:0; z-index:2; background:#f6f8fa; }
+  .tc-table th, .tc-table td { padding:8px 10px; border-bottom:1px solid #e7ebef; text-align:left; vertical-align:top; }
+  .tc-table tr.tc-protected { background:#fff6f2; }
+  .tc-table tr.tc-deleted { opacity:.55; text-decoration:line-through; }
+  .tc-description { max-width:360px; white-space:normal; }
+  .tc-checkbox { width:18px; height:18px; }
+  .tc-pager { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-top:10px; }
+  .tc-danger-panel { border:1px solid #e7a29a; background:#fff7f6; }
+  .tc-confirm { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-weight:700; }
+  .tc-progress { width:100%; height:16px; }
+  .tc-log { max-height:260px; overflow:auto; border:1px solid #dfe4ea; border-radius:10px; background:#fff; padding:8px; }
+  .tc-log-row { display:grid; grid-template-columns:120px 1fr; gap:10px; padding:5px 3px; border-bottom:1px solid #eef1f4; font-size:.88rem; }
+  .tc-log-row:last-child { border-bottom:0; }
+  .tc-muted { color:#667085; }
+  .tc-hidden { display:none !important; }
+  .tc-warning { color:#9c2f22; font-weight:700; }
+  .tc-success { color:#137333; font-weight:700; }
+  .tc-result-pill { display:inline-block; border-radius:999px; padding:2px 8px; font-size:.78rem; font-weight:700; background:#eef2f6; }
+  .tc-result-pill.deleted { background:#e8f5e9; color:#137333; }
+  .tc-result-pill.failed { background:#fdecec; color:#9c2f22; }
+  .tc-result-pill.protected { background:#fff0e8; color:#9c4a17; }
+  @media (max-width: 1000px) {
+    .tc-grid, .tc-grid.two, .tc-summary { grid-template-columns:1fr 1fr; }
+  }
+  @media (max-width: 640px) {
+    .tc-grid, .tc-grid.two, .tc-summary { grid-template-columns:1fr; }
+  }
+</style>
+
+<section class="card">
+  <div class="section-title-row">
+    <div>
+      <h1>Time Charge Cleanup</h1>
+      <p class="subtle">Scan migrated QuickBooks TimeActivity records, export a backup, and permanently delete selected customer/job time charges.</p>
+    </div>
+    {% if qbo.read_only %}<span class="badge warn">Deletion disabled: read-only mode</span>{% endif %}
+  </div>
+
+  <div class="notice warn">
+    Deletion is permanent. Records marked <strong>HasBeenBilled</strong> are visible but protected and cannot be deleted by this tool.
+    Scans expire after {{ scan_ttl_minutes }} minutes.
+  </div>
+
+  <form id="scan-form">
+    <div class="tc-grid">
+      <div class="tc-field">
+        <label for="start-date">Start date</label>
+        <input id="start-date" name="start_date" type="date">
+      </div>
+      <div class="tc-field">
+        <label for="end-date">End date</label>
+        <input id="end-date" name="end_date" type="date">
+      </div>
+      <div class="tc-field">
+        <label for="billable-status">Billable status</label>
+        <select id="billable-status" name="billable_status">
+          <option value="all">All statuses</option>
+          <option value="Billable">Billable</option>
+          <option value="NotBillable">Not billable</option>
+          <option value="HasBeenBilled">Has been billed (view only)</option>
+        </select>
+      </div>
+      <div class="tc-field">
+        <label>&nbsp;</label>
+        <label><input id="customer-required" type="checkbox" checked> Only records assigned to a customer/job</label>
+      </div>
+      <div class="tc-field">
+        <label for="customer-text">Customer/job contains</label>
+        <input id="customer-text" type="text" maxlength="250" placeholder="Optional">
+      </div>
+      <div class="tc-field">
+        <label for="worker-text">Employee/vendor contains</label>
+        <input id="worker-text" type="text" maxlength="250" placeholder="Optional">
+      </div>
+      <div class="tc-field">
+        <label for="item-text">Service item contains</label>
+        <input id="item-text" type="text" maxlength="250" placeholder="Optional">
+      </div>
+      <div class="tc-field">
+        <label for="description-text">Description contains</label>
+        <input id="description-text" type="text" maxlength="500" placeholder="Optional">
+      </div>
+    </div>
+    <div class="tc-toolbar" style="margin-top:14px;">
+      <button id="scan-button" class="button primary" type="submit">Scan QuickBooks</button>
+      <span id="scan-status" class="subtle"></span>
+    </div>
+  </form>
+</section>
+
+<section id="results-section" class="card tc-hidden">
+  <div class="section-title-row">
+    <div>
+      <h2>Scan results</h2>
+      <p id="scan-expiry" class="subtle"></p>
+    </div>
+    <div class="tc-toolbar">
+      <button id="select-safe-button" class="button" type="button">Select all safe records</button>
+      <button id="clear-selection-button" class="button" type="button">Clear selection</button>
+    </div>
+  </div>
+
+  <div class="tc-summary">
+    <div class="tc-stat"><span>Total found</span><strong id="count-total">0</strong></div>
+    <div class="tc-stat"><span>Safe to select</span><strong id="count-safe">0</strong></div>
+    <div class="tc-stat"><span>Selected</span><strong id="count-selected">0</strong></div>
+    <div class="tc-stat"><span>Billable</span><strong id="count-billable">0</strong></div>
+    <div class="tc-stat"><span>Protected billed</span><strong id="count-protected">0</strong></div>
+  </div>
+
+  <div id="truncated-warning" class="notice warn tc-hidden"></div>
+
+  <div class="tc-table-wrap">
+    <table class="tc-table">
+      <thead>
+        <tr>
+          <th><input id="select-page" class="tc-checkbox" type="checkbox" aria-label="Select safe records on this page"></th>
+          <th>Date</th>
+          <th>Customer/job</th>
+          <th>Employee/vendor</th>
+          <th>Item</th>
+          <th>Hours</th>
+          <th>Status</th>
+          <th>Description</th>
+          <th>QBO ID</th>
+          <th>Result</th>
+        </tr>
+      </thead>
+      <tbody id="results-body"></tbody>
+    </table>
+  </div>
+  <div class="tc-pager">
+    <button id="previous-page" class="button" type="button">Previous</button>
+    <span id="page-label" class="subtle"></span>
+    <button id="next-page" class="button" type="button">Next</button>
+  </div>
+</section>
+
+<section id="backup-section" class="card tc-hidden">
+  <h2>1. Download the backup</h2>
+  <p>The CSV contains the selected records, their QuickBooks IDs and SyncTokens, and the complete raw QuickBooks JSON.</p>
+  <div class="tc-toolbar">
+    <button id="backup-button" class="button primary" type="button">Download selected backup CSV</button>
+    <span id="backup-status" class="subtle">A backup is required after every selection change.</span>
+  </div>
+</section>
+
+<section id="delete-section" class="card tc-danger-panel tc-hidden">
+  <h2>2. Confirm permanent deletion</h2>
+  <p>Type this exact phrase:</p>
+  <p id="confirmation-phrase" class="tc-confirm"></p>
+  <div class="tc-grid two">
+    <div class="tc-field">
+      <label for="confirmation-input">Confirmation phrase</label>
+      <input id="confirmation-input" type="text" autocomplete="off">
+    </div>
+    <div class="tc-field">
+      <label>&nbsp;</label>
+      <div class="tc-toolbar">
+        <button id="delete-button" class="button danger" type="button" disabled>Delete selected time charges</button>
+        <button id="stop-button" class="button tc-hidden" type="button">Stop after current chunk</button>
+      </div>
+    </div>
+  </div>
+  <div id="delete-progress-area" class="tc-hidden" style="margin-top:16px;">
+    <progress id="delete-progress" class="tc-progress" max="100" value="0"></progress>
+    <p id="delete-progress-text" class="subtle"></p>
+    <div id="delete-log" class="tc-log"></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="section-title-row">
+    <div>
+      <h2>Recent deletion log</h2>
+      <p class="subtle">The latest 50 attempts recorded by this app.</p>
+    </div>
+    <a class="button" href="/time-charges">Refresh log</a>
+  </div>
+  {% if history %}
+  <div class="tc-table-wrap" style="max-height:340px;">
+    <table class="tc-table" style="min-width:1050px;">
+      <thead><tr><th>Time</th><th>Date</th><th>Customer/job</th><th>Employee/vendor</th><th>Hours</th><th>QBO ID</th><th>Status</th><th>Message</th></tr></thead>
+      <tbody>
+      {% for row in history %}
+        <tr>
+          <td>{{ row.created_at }}</td>
+          <td>{{ row.txn_date or '—' }}</td>
+          <td>{{ row.customer_name or '—' }}</td>
+          <td>{{ row.worker_name or '—' }}</td>
+          <td>{{ row.hours_decimal or '—' }}</td>
+          <td>{{ row.qbo_time_activity_id }}</td>
+          <td><span class="tc-result-pill {{ 'deleted' if row.status in ['deleted', 'already_missing'] else ('protected' if row.status == 'protected' else 'failed') }}">{{ row.status }}</span></td>
+          <td>{{ row.error_message or '—' }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    <p>No deletion attempts have been logged yet.</p>
+  {% endif %}
+</section>
+
+<script>
+(() => {
+  const csrfToken = {{ csrf_token|tojson }};
+  const qboReadOnly = {{ qbo.read_only|tojson }};
+  const pageSize = 100;
+  const deleteChunkLimit = {{ delete_chunk_limit }};
+
+  const state = {
+    scanId: null,
+    expiresAt: null,
+    records: [],
+    selected: new Set(),
+    backedUpSelectionKey: null,
+    page: 1,
+    deleting: false,
+    stopRequested: false,
+  };
+
+  const el = (id) => document.getElementById(id);
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  function selectionKey() {
+    return [...state.selected].sort().join(',');
+  }
+
+  function markSelectionChanged() {
+    state.backedUpSelectionKey = null;
+    el('backup-status').textContent = 'A backup is required after every selection change.';
+    el('backup-status').className = 'subtle';
+    updateSelectionUi();
+  }
+
+  function recordUnavailable(record) {
+    return record.protected || ['deleted', 'already_missing', 'protected', 'changed_since_scan'].includes(record.resultStatus);
+  }
+
+  function safeRecords() {
+    return state.records.filter((record) => !recordUnavailable(record));
+  }
+
+  function updateSelectionUi() {
+    const count = state.selected.size;
+    el('count-selected').textContent = String(count);
+    el('backup-section').classList.toggle('tc-hidden', count === 0);
+    el('delete-section').classList.toggle('tc-hidden', count === 0);
+    const phrase = `DELETE ${count} TIME CHARGES`;
+    el('confirmation-phrase').textContent = phrase;
+    const backupCurrent = state.backedUpSelectionKey === selectionKey() && count > 0;
+    const confirmationCorrect = el('confirmation-input').value.trim() === phrase;
+    el('delete-button').disabled = qboReadOnly || !backupCurrent || !confirmationCorrect || state.deleting;
+  }
+
+  function badgeFor(record) {
+    if (record.resultStatus) {
+      const css = record.resultStatus === 'deleted' || record.resultStatus === 'already_missing'
+        ? 'deleted'
+        : (record.resultStatus === 'protected' ? 'protected' : 'failed');
+      return `<span class="tc-result-pill ${css}">${escapeHtml(record.resultStatus)}</span>`;
+    }
+    return '—';
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#039;');
+  }
+
+  function currentPageRecords() {
+    const start = (state.page - 1) * pageSize;
+    return state.records.slice(start, start + pageSize);
+  }
+
+  function renderTable() {
+    const rows = currentPageRecords();
+    el('results-body').innerHTML = rows.map((record) => {
+      const checked = state.selected.has(record.id) ? 'checked' : '';
+      const disabled = recordUnavailable(record) ? 'disabled' : '';
+      const classes = [record.protected ? 'tc-protected' : '', record.resultStatus === 'deleted' ? 'tc-deleted' : ''].filter(Boolean).join(' ');
+      return `
+        <tr class="${classes}">
+          <td><input class="tc-checkbox row-select" type="checkbox" data-id="${escapeHtml(record.id)}" ${checked} ${disabled}></td>
+          <td>${escapeHtml(record.txn_date || '—')}</td>
+          <td>${escapeHtml(record.customer_name || '—')}</td>
+          <td>${escapeHtml(record.worker_name || '—')}<br><span class="tc-muted">${escapeHtml(record.worker_type || '')}</span></td>
+          <td>${escapeHtml(record.item_name || '—')}</td>
+          <td>${escapeHtml(record.hours_decimal)}</td>
+          <td>${record.protected ? '<span class="tc-warning">HasBeenBilled</span>' : escapeHtml(record.billable_status)}</td>
+          <td class="tc-description">${escapeHtml(record.description || '—')}</td>
+          <td>${escapeHtml(record.id)}</td>
+          <td>${badgeFor(record)}</td>
+        </tr>`;
+    }).join('');
+
+    document.querySelectorAll('.row-select').forEach((checkbox) => {
+      checkbox.addEventListener('change', (event) => {
+        const id = event.currentTarget.dataset.id;
+        if (event.currentTarget.checked) state.selected.add(id);
+        else state.selected.delete(id);
+        markSelectionChanged();
+      });
+    });
+
+    const pages = Math.max(1, Math.ceil(state.records.length / pageSize));
+    el('page-label').textContent = `Page ${state.page} of ${pages} · ${state.records.length.toLocaleString()} records`;
+    el('previous-page').disabled = state.page <= 1;
+    el('next-page').disabled = state.page >= pages;
+    const pageSafeIds = rows.filter((record) => !recordUnavailable(record)).map((record) => record.id);
+    el('select-page').checked = pageSafeIds.length > 0 && pageSafeIds.every((id) => state.selected.has(id));
+  }
+
+  async function parseError(response) {
+    let message = `${response.status} ${response.statusText}`;
+    try {
+      const payload = await response.json();
+      message = payload.detail || payload.message || message;
+    } catch (_) {}
+    return message;
+  }
+
+  function setScanBusy(busy) {
+    el('scan-button').disabled = busy;
+    el('scan-button').textContent = busy ? 'Scanning…' : 'Scan QuickBooks';
+  }
+
+  el('scan-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    setScanBusy(true);
+    el('scan-status').textContent = 'Reading TimeActivity records from QuickBooks…';
+    el('scan-status').className = 'subtle';
+    try {
+      const response = await fetch('/time-charges/api/scan', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          start_date: el('start-date').value || null,
+          end_date: el('end-date').value || null,
+          customer_text: el('customer-text').value,
+          worker_text: el('worker-text').value,
+          item_text: el('item-text').value,
+          description_text: el('description-text').value,
+          billable_status: el('billable-status').value,
+          customer_required: el('customer-required').checked,
+        }),
+      });
+      if (!response.ok) throw new Error(await parseError(response));
+      const payload = await response.json();
+      state.scanId = payload.scan_id;
+      state.expiresAt = payload.expires_at;
+      state.records = payload.records;
+      state.selected.clear();
+      state.backedUpSelectionKey = null;
+      state.page = 1;
+      el('count-total').textContent = payload.counts.total.toLocaleString();
+      el('count-safe').textContent = payload.counts.safe.toLocaleString();
+      el('count-billable').textContent = payload.counts.billable.toLocaleString();
+      el('count-protected').textContent = payload.counts.protected.toLocaleString();
+      el('scan-expiry').textContent = `Scan expires ${new Date(payload.expires_at).toLocaleString()}.`;
+      el('truncated-warning').classList.toggle('tc-hidden', !payload.truncated);
+      if (payload.truncated) {
+        el('truncated-warning').textContent = `The scan reached the ${payload.max_scan_records.toLocaleString()}-record safety limit. Narrow the date range before deleting.`;
+      }
+      el('results-section').classList.remove('tc-hidden');
+      el('backup-section').classList.add('tc-hidden');
+      el('delete-section').classList.add('tc-hidden');
+      el('confirmation-input').value = '';
+      el('scan-status').textContent = `Found ${payload.counts.total.toLocaleString()} matching records.`;
+      el('scan-status').className = 'tc-success';
+      renderTable();
+      updateSelectionUi();
+    } catch (error) {
+      el('scan-status').textContent = error.message;
+      el('scan-status').className = 'tc-warning';
+    } finally {
+      setScanBusy(false);
+    }
+  });
+
+  el('select-safe-button').addEventListener('click', () => {
+    safeRecords().forEach((record) => state.selected.add(record.id));
+    markSelectionChanged();
+    renderTable();
+  });
+
+  el('clear-selection-button').addEventListener('click', () => {
+    state.selected.clear();
+    markSelectionChanged();
+    renderTable();
+  });
+
+  el('select-page').addEventListener('change', (event) => {
+    currentPageRecords().forEach((record) => {
+      if (!recordUnavailable(record)) {
+        if (event.currentTarget.checked) state.selected.add(record.id);
+        else state.selected.delete(record.id);
+      }
+    });
+    markSelectionChanged();
+    renderTable();
+  });
+
+  el('previous-page').addEventListener('click', () => {
+    if (state.page > 1) { state.page -= 1; renderTable(); }
+  });
+  el('next-page').addEventListener('click', () => {
+    const pages = Math.max(1, Math.ceil(state.records.length / pageSize));
+    if (state.page < pages) { state.page += 1; renderTable(); }
+  });
+
+  el('confirmation-input').addEventListener('input', updateSelectionUi);
+
+  el('backup-button').addEventListener('click', async () => {
+    const ids = [...state.selected];
+    if (!state.scanId || ids.length === 0) return;
+    el('backup-button').disabled = true;
+    el('backup-status').textContent = 'Preparing backup…';
+    el('backup-status').className = 'subtle';
+    try {
+      const response = await fetch('/time-charges/api/export', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({scan_id: state.scanId, ids, csrf_token: csrfToken}),
+      });
+      if (!response.ok) throw new Error(await parseError(response));
+      const blob = await response.blob();
+      const disposition = response.headers.get('Content-Disposition') || '';
+      const match = disposition.match(/filename="([^"]+)"/);
+      const filename = match ? match[1] : 'qbo-time-activity-backup.csv';
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      state.backedUpSelectionKey = selectionKey();
+      el('backup-status').textContent = `Backup downloaded for ${ids.length.toLocaleString()} selected records.`;
+      el('backup-status').className = 'tc-success';
+      updateSelectionUi();
+    } catch (error) {
+      el('backup-status').textContent = error.message;
+      el('backup-status').className = 'tc-warning';
+    } finally {
+      el('backup-button').disabled = false;
+    }
+  });
+
+  function addDeleteLog(id, status, message) {
+    const row = document.createElement('div');
+    row.className = 'tc-log-row';
+    row.innerHTML = `<strong>${escapeHtml(id)} · ${escapeHtml(status)}</strong><span>${escapeHtml(message || '')}</span>`;
+    el('delete-log').prepend(row);
+  }
+
+  el('stop-button').addEventListener('click', () => {
+    state.stopRequested = true;
+    el('stop-button').disabled = true;
+    el('stop-button').textContent = 'Stopping…';
+  });
+
+  el('delete-button').addEventListener('click', async () => {
+    const ids = [...state.selected];
+    if (!state.scanId || ids.length === 0 || state.deleting) return;
+    const phrase = `DELETE ${ids.length} TIME CHARGES`;
+    if (el('confirmation-input').value.trim() !== phrase) return;
+    if (state.backedUpSelectionKey !== selectionKey()) return;
+
+    state.deleting = true;
+    state.stopRequested = false;
+    el('delete-progress-area').classList.remove('tc-hidden');
+    el('stop-button').classList.remove('tc-hidden');
+    el('stop-button').disabled = false;
+    el('stop-button').textContent = 'Stop after current chunk';
+    el('delete-log').innerHTML = '';
+    updateSelectionUi();
+
+    let processed = 0;
+    let deleted = 0;
+    let failed = 0;
+    try {
+      for (let offset = 0; offset < ids.length; offset += deleteChunkLimit) {
+        if (state.stopRequested) break;
+        const chunk = ids.slice(offset, offset + deleteChunkLimit);
+        el('delete-progress-text').textContent = `Deleting records ${offset + 1}–${Math.min(offset + chunk.length, ids.length)} of ${ids.length}…`;
+        const response = await fetch('/time-charges/api/delete-chunk', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            scan_id: state.scanId,
+            ids: chunk,
+            expected_total: ids.length,
+            confirmation: phrase,
+            csrf_token: csrfToken,
+          }),
+        });
+        if (!response.ok) throw new Error(await parseError(response));
+        const payload = await response.json();
+        payload.results.forEach((result) => {
+          const record = state.records.find((row) => row.id === result.id);
+          if (record) record.resultStatus = result.status;
+          if (['deleted', 'already_missing'].includes(result.status)) {
+            state.selected.delete(result.id);
+            deleted += 1;
+          } else if (['protected', 'changed_since_scan'].includes(result.status)) {
+            state.selected.delete(result.id);
+            if (record && result.status === 'protected') record.protected = true;
+          } else {
+            failed += 1;
+          }
+          addDeleteLog(result.id, result.status, result.message);
+        });
+        processed += chunk.length;
+        el('delete-progress').value = Math.round((processed / ids.length) * 100);
+        renderTable();
+        updateSelectionUi();
+        if (processed < ids.length && !state.stopRequested) {
+          el('delete-progress-text').textContent = `Processed ${processed} of ${ids.length}. Pausing briefly to respect QuickBooks API limits…`;
+          await sleep(payload.recommended_delay_ms || 8000);
+        }
+      }
+      const stoppedText = state.stopRequested ? ' Deletion was stopped before the remaining chunks.' : '';
+      el('delete-progress-text').textContent = `Finished this run: ${deleted} deleted/already missing, ${failed} failed.${stoppedText}`;
+      state.backedUpSelectionKey = null;
+      el('backup-status').textContent = state.selected.size ? 'Download a new backup before retrying the remaining selection.' : 'Completed.';
+      el('confirmation-input').value = '';
+    } catch (error) {
+      el('delete-progress-text').textContent = `Stopped: ${error.message}`;
+      addDeleteLog('REQUEST', 'failed', error.message);
+      state.backedUpSelectionKey = null;
+    } finally {
+      state.deleting = false;
+      el('stop-button').classList.add('tc-hidden');
+      updateSelectionUi();
+    }
+  });
+
+  updateSelectionUi();
+})();
+</script>
+{% endblock %}

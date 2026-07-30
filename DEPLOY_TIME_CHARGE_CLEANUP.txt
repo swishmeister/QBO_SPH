@@ -1,0 +1,23 @@
+TIME CHARGE CLEANUP DEPLOYMENT
+
+This repository already contains the integrated feature. Do not run apply_patch.py.
+
+Active files added or changed:
+- app/main.py
+- app/time_charge_cleanup.py
+- app/templates/base.html
+- app/templates/dashboard.html
+- app/templates/time_charge_cleanup.html
+- README.md
+- .gitignore
+
+Render test sequence:
+1. Push these files to the main branch.
+2. Leave QBO_READ_ONLY=true for the first deployment.
+3. Open https://sph.delightfulgardens.com/time-charges.
+4. Scan a narrow date range and download a CSV backup.
+5. Confirm that the delete button remains disabled in read-only mode.
+6. In Render, change QBO_READ_ONLY to false and redeploy.
+7. Delete one known migrated TimeActivity first, then confirm it disappeared in QuickBooks.
+
+The app creates its two cleanup tables automatically on startup.

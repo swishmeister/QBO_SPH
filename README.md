@@ -184,3 +184,29 @@ New rows added inside the app will upload to the linked QuickBooks estimate as l
 - Once the Cost is changed from the imported Rate, the pink warning flag is removed while the Cost cell remains editable.
 - The app's Cost column is not sent to QuickBooks; it remains internal for SPH math.
 - Blank separator rows and rows with only a Description upload to QuickBooks as DescriptionOnly lines.
+
+## Time Charge Cleanup
+
+The application includes a bulk QuickBooks Online `TimeActivity` cleanup page at:
+
+```text
+/time-charges
+```
+
+The page can scan and filter time activities by date, customer/job, employee or vendor, service item, description, and billable status. Selected records must be exported to CSV before deletion. Records marked `HasBeenBilled` are protected and cannot be deleted through this feature.
+
+Before each delete batch, the app re-reads the selected TimeActivity records from QuickBooks. A record is skipped if it was deleted elsewhere, became billed, or its `SyncToken` changed after the scan and backup. Delete requests are sent in batches of 10 and logged in the application database.
+
+Keep this Render variable enabled while testing the scan and CSV workflow:
+
+```env
+QBO_READ_ONLY=true
+```
+
+After verifying the records shown by the scanner, change the Render variable to:
+
+```env
+QBO_READ_ONLY=false
+```
+
+Render must redeploy after the environment-variable change before permanent deletion is enabled.
