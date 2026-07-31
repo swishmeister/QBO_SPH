@@ -188,6 +188,79 @@ def _entity_path(entity_type: str) -> str:
     }[entity_type]
 
 
+def _add_required_update_fields(
+    entity_type: str,
+    source_transaction: dict[str, Any],
+    update_transaction: dict[str, Any],
+    fallback_transaction: dict[str, Any] | None = None,
+) -> None:
+    """Preserve QBO header fields required when expense lines are updated.
+
+    QuickBooks validates parent transaction fields whenever the Line collection
+    is supplied. The direct read-by-ID response is preferred, while the scan
+    snapshot is retained as a fallback because QBO query responses can omit
+    fields that are still required on an update.
+    """
+
+    required_fields_by_entity = {
+        "Bill": ("VendorRef", "APAccountRef"),
+        "VendorCredit": ("VendorRef", "APAccountRef"),
+        "Purchase": ("PaymentType", "AccountRef", "EntityRef"),
+    }
+
+    fallback = fallback_transaction or {}
+    for field_name in required_fields_by_entity.get(entity_type, ()):
+        field_value = source_transaction.get(field_name)
+        if field_value is None or field_value == "":
+            field_value = fallback.get(field_name)
+        if field_value is not None and field_value != "":
+            update_transaction[field_name] = deepcopy(field_value)
+
+
+def _build_update_transaction(
+    entity_type: str,
+    latest: dict[str, Any],
+    scanned: dict[str, Any],
+) -> dict[str, Any]:
+    """Build a transaction update without dropping required QBO headers.
+
+    Purchases are updated from the complete read-by-ID object. This is more
+    reliable than reconstructing a sparse Purchase because PaymentType is
+    mandatory and may be omitted from a query response. Bills and vendor
+    credits retain the smaller sparse update shape.
+    """
+
+    if entity_type == "Purchase":
+        update_transaction = deepcopy(latest)
+        # These response-only fields are not needed in an update request. QBO
+        # ignores most read-only properties, but removing them keeps the payload
+        # focused while preserving every writable Purchase header and line.
+        for field_name in ("MetaData", "domain", "status"):
+            update_transaction.pop(field_name, None)
+        update_transaction.pop("sparse", None)
+        update_transaction["Id"] = _safe_text(latest.get("Id"))
+        update_transaction["SyncToken"] = _safe_text(latest.get("SyncToken"))
+        update_transaction["Line"] = deepcopy(latest.get("Line") or [])
+    else:
+        update_transaction = {
+            "Id": _safe_text(latest.get("Id")),
+            "SyncToken": _safe_text(latest.get("SyncToken")),
+            "sparse": True,
+            # QuickBooks treats Line as a replace-style collection during many
+            # transaction updates. Re-send every current line and modify only
+            # the selected BillableStatus fields.
+            "Line": deepcopy(latest.get("Line") or []),
+        }
+
+    _add_required_update_fields(
+        entity_type,
+        latest,
+        update_transaction,
+        fallback_transaction=scanned,
+    )
+    return update_transaction
+
+
 def _transaction_type_label(entity_type: str, transaction: dict[str, Any]) -> str:
     if entity_type == "Bill":
         return "Bill"
@@ -456,28 +529,32 @@ async def _fetch_latest_transactions(
     db: Session,
     transaction_keys: list[str],
 ) -> dict[str, dict[str, Any]]:
-    grouped: dict[str, list[str]] = {}
-    for key in transaction_keys:
+    """Read each selected transaction directly by ID before updating it.
+
+    A normal QBO query is sufficient for scanning, but direct entity reads are
+    used for writes because they return the most complete transaction shape,
+    including mandatory Purchase fields such as PaymentType. Update chunks are
+    already limited to ten source transactions, so the additional reads remain
+    bounded.
+    """
+
+    latest: dict[str, dict[str, Any]] = {}
+    for key in _dedupe_ids(transaction_keys):
         entity_type, separator, transaction_id = key.partition(":")
         if not separator or entity_type not in SUPPORTED_ENTITY_TYPES or not transaction_id:
             continue
-        grouped.setdefault(entity_type, []).append(transaction_id)
 
-    latest: dict[str, dict[str, Any]] = {}
-    for entity_type, ids in grouped.items():
-        cleaned_ids = _dedupe_ids(ids)
-        quoted = ", ".join(f"'{_escape_query_literal(value)}'" for value in cleaned_ids)
-        query = f"select * from {entity_type} where Id in ({quoted}) maxresults {len(cleaned_ids)}"
-        payload = await qbo_query(db, query)
-        batch = payload.get("QueryResponse", {}).get(entity_type, [])
-        if not isinstance(batch, list):
+        payload = await qbo_request(
+            db,
+            "GET",
+            f"/{_entity_path(entity_type)}/{transaction_id}",
+        )
+        transaction = payload.get(entity_type)
+        if not isinstance(transaction, dict):
             continue
-        for transaction in batch:
-            if not isinstance(transaction, dict):
-                continue
-            transaction_id = _safe_text(transaction.get("Id"))
-            if transaction_id:
-                latest[_transaction_key(entity_type, transaction_id)] = transaction
+        returned_id = _safe_text(transaction.get("Id"))
+        if returned_id:
+            latest[_transaction_key(entity_type, returned_id)] = transaction
     return latest
 
 
@@ -885,15 +962,27 @@ async def update_billable_expense_chunk(
                 results.append({"id": record["id"], "status": "changed_since_scan", "message": message})
             continue
 
-        update_transaction = {
-            "Id": _safe_text(latest.get("Id")),
-            "SyncToken": _safe_text(latest.get("SyncToken")),
-            "sparse": True,
-            # QuickBooks treats Line as a replace-style collection during many
-            # transaction updates. Re-send every current line and modify only
-            # the selected BillableStatus fields.
-            "Line": deepcopy(latest.get("Line") or []),
-        }
+        entity_type = _safe_text(selected_records[0].get("entity_type"))
+        update_transaction = _build_update_transaction(entity_type, latest, scanned)
+
+        if entity_type == "Purchase" and not _safe_text(update_transaction.get("PaymentType")):
+            message = (
+                "QuickBooks did not return the Purchase PaymentType, so the transaction was not changed. "
+                "Run a new scan; if this repeats, inspect the raw backup JSON for this Purchase."
+            )
+            for record in selected_records:
+                _add_log(
+                    db,
+                    scan_id=scan.id,
+                    batch_request_id=None,
+                    record=record,
+                    transaction=latest,
+                    status="missing_required_field",
+                    error_message=message,
+                )
+                results.append({"id": record["id"], "status": "failed", "message": message})
+            continue
+
         changed_records: list[dict[str, Any]] = []
 
         for record in selected_records:
@@ -963,7 +1052,6 @@ async def update_billable_expense_chunk(
         if not changed_records:
             continue
 
-        entity_type = changed_records[0]["entity_type"]
         bid = f"u{request_index}"
         update_requests.append(
             {

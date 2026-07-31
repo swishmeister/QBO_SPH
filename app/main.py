@@ -37,7 +37,6 @@ from .qbo_client import (
 )
 
 from .time_charge_cleanup import router as time_charge_cleanup_router
-from .billable_expense_cleanup import router as billable_expense_cleanup_router
 
 settings = get_settings()
 
@@ -93,7 +92,6 @@ _run_lightweight_migrations()
 
 app = FastAPI(title="QBO SPH Calculator and File Editor")
 app.include_router(time_charge_cleanup_router)
-app.include_router(billable_expense_cleanup_router)
 app.add_middleware(
     SessionMiddleware,
     secret_key=settings.app_secret_key,

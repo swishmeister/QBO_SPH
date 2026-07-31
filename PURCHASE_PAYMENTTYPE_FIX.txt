@@ -1,0 +1,12 @@
+Purchase PaymentType update fix
+================================
+
+Replace app/billable_expense_cleanup.py with the corrected version and deploy.
+
+What changed:
+- Selected Purchase transactions are re-read directly by ID before updating.
+- Purchase updates use the complete current transaction payload instead of a reconstructed sparse payload.
+- PaymentType, AccountRef, and EntityRef are retained from the direct read, with the scan snapshot as fallback.
+- The updater refuses to send a Purchase if PaymentType still cannot be determined.
+
+After deployment, run a new scan and download a new CSV backup before retrying.
