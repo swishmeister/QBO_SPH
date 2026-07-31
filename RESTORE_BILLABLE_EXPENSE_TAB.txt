@@ -1,0 +1,16 @@
+Replace these files at the repository root, preserving the app/ paths:
+
+app/main.py
+app/billable_expense_cleanup.py
+app/templates/base.html
+app/templates/dashboard.html
+app/templates/billable_expense_cleanup.html
+
+Then commit and sync. Verify the Render deploy uses that commit.
+
+Expected live route:
+/billable-expenses
+
+Expected main.py integration:
+from .billable_expense_cleanup import router as billable_expense_cleanup_router
+app.include_router(billable_expense_cleanup_router)
